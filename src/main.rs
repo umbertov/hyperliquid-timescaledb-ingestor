@@ -1,11 +1,13 @@
 use bigdecimal::BigDecimal;
 use chrono::{DateTime, Utc};
+use clap::{Parser, Subcommand};
 use color_eyre::eyre::{eyre, Result, WrapErr};
 use diesel::{Connection, PgConnection};
 use hyperliquid_rust_sdk::{BaseUrl, BookLevel, InfoClient, Message, Subscription};
 use hyperliquid_timescaledb_collector::models::{OrderbookRow, TradeRow};
 use mimalloc::MiMalloc;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::{error, info};
@@ -15,6 +17,25 @@ static GLOBAL: MiMalloc = MiMalloc;
 
 const BATCH_CAPACITY: usize = 128;
 const FLUSH_INTERVAL: Duration = Duration::from_secs(1);
+
+#[derive(Parser)]
+#[command(name = "hyperliquid-timescaledb-collector")]
+struct Args {
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    Export {
+        #[arg(long)]
+        output_dir: PathBuf,
+        #[arg(long = "symbol")]
+        symbols: Vec<String>,
+        #[arg(long, default_value = "both", value_parser = ["both", "trades", "orderbooks"])]
+        dataset: String,
+    },
+}
 
 enum WriteMsg {
     Trade(TradeRow),
@@ -28,6 +49,25 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
+
+    if let Some(Command::Export {
+        output_dir,
+        symbols,
+        dataset,
+    }) = Args::parse().command
+    {
+        let database_url = std::env::var("DATABASE_URL").wrap_err("DATABASE_URL must be set")?;
+        return tokio::task::spawn_blocking(move || {
+            hyperliquid_timescaledb_collector::export::export_parquet(
+                &database_url,
+                &output_dir,
+                &symbols,
+                &dataset,
+            )
+        })
+        .await
+        .wrap_err("export task failed")?;
+    }
 
     let database_url = std::env::var("DATABASE_URL").wrap_err("DATABASE_URL must be set")?;
     let mut conn = PgConnection::establish(&database_url).wrap_err("connecting to PostgreSQL")?;

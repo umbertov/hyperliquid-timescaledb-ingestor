@@ -9,6 +9,9 @@ Read `README.md` before you change the project. Maintain `README.md` and `CLAUDE
 - Store bid and ask levels as JSONB arrays.
 - Use exchange trade IDs and timestamps to deduplicate trade events.
 - Use `@index` for spot symbols, except `PURR/USDC`.
+- Export trades and order-book messages as Parquet in bounded batches.
+- Keep exported prices and sizes as decimal text to preserve exact values.
+- Fail if an export output file already exists.
 
 ## Migrations
 

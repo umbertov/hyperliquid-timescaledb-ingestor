@@ -28,6 +28,21 @@ Spot names use `@index` values. The `PURR/USDC` market uses that pair name.
 
 The collector uses Hyperliquid's public Rust SDK for market metadata and WebSocket subscriptions. Private account data is out of scope.
 
+## Export data
+
+The `export` command writes Parquet files for stored trades and order-book messages. It exports both datasets by default. It writes batches of 8,192 rows.
+
+Run an export from the project root:
+
+```sh
+nix run .#default -- export --output-dir ./export
+nix run .#default -- export --output-dir ./export --dataset trades --symbol BTC --symbol @1
+```
+
+Set `--dataset` to `both`, `trades`, or `orderbooks`. Repeat `--symbol` to select market names. An empty symbol list selects all markets. Price and size fields use decimal text to preserve exact values. The command fails if an output file already exists.
+
+The export directory contains `trades.parquet` and `orderbook_messages.parquet`. The command creates only the files for the selected dataset.
+
 CI checks formatting, Clippy, and workspace tests before it builds the image. Pushes to `main` publish `latest` and a commit tag to GitHub Container Registry. Version tags publish the matching version tag.
 
 ## Development
