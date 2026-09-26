@@ -29,3 +29,4 @@ Read `README.md` before you change the project. Maintain `README.md` and `CLAUDE
 
 - Keep formatting, Clippy, workspace tests, and the Docker image build in CI.
 - Limit the Nix package source to Rust build inputs.
+- Publish checked images to GitHub Container Registry from `main` and version tags.

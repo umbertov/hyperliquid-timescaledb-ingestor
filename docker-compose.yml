@@ -1,6 +1,6 @@
 services:
   collector:
-    image: hyperliquid-timescaledb-collector:latest
+    image: ${COLLECTOR_IMAGE:-hyperliquid-timescaledb-collector:latest}
     restart: unless-stopped
     environment:
       DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL}
