@@ -15,9 +15,10 @@
       rustToolchain = pkgs.rust-bin.stable."1.98.1".minimal.override {
         extensions = [ "clippy" "rust-analyzer" "rust-src" "rustfmt" ];
       };
-      rustPlatform = pkgs.makeRustPlatform {
-        cargo = rustToolchain;
-        rustc = rustToolchain;
+      staticRustToolchain = pkgs.pkgsStatic.rust-bin.stable."1.98.1".minimal;
+      staticRustPlatform = pkgs.pkgsStatic.makeRustPlatform {
+        cargo = staticRustToolchain;
+        rustc = staticRustToolchain;
       };
       rustSource = pkgs.lib.cleanSourceWith {
         src = ./.;
@@ -31,7 +32,7 @@
             buildFile = builtins.elem relative [ "Cargo.toml" "Cargo.lock" "build.rs" "rust-toolchain" "rust-toolchain.toml" ];
           in value == root || source || buildFile;
       };
-      app = pkgs.pkgsStatic.rustPlatform.buildRustPackage {
+      app = staticRustPlatform.buildRustPackage {
         pname = "hyperliquid-timescaledb-collector";
         version = "0.1.0";
         src = rustSource;

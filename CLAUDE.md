@@ -8,6 +8,7 @@ Read `README.md` before you change the project. Maintain `README.md` and `CLAUDE
 - Store trades and order-book messages in TimescaleDB hypertables.
 - Store bid and ask levels as JSONB arrays.
 - Use exchange trade IDs and timestamps to deduplicate trade events.
+- Use `@index` for spot symbols, except `PURR/USDC`.
 
 ## Migrations
 

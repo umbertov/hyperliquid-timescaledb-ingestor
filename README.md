@@ -24,6 +24,7 @@ Set `COLLECTOR_IMAGE` to select a container image. The default uses the image th
 ## Data
 
 The `symbols` table stores spot and perpetual market names. The `trades` table stores public trade events. The `orderbook_messages` table stores full bid and ask levels as JSONB arrays.
+Spot names use `@index` values. The `PURR/USDC` market uses that pair name.
 
 The collector uses Hyperliquid's public Rust SDK for market metadata and WebSocket subscriptions. Private account data is out of scope.
 
