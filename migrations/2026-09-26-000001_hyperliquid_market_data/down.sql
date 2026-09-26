@@ -1,0 +1,3 @@
+DROP TABLE IF EXISTS orderbook_messages;
+DROP TABLE IF EXISTS trades;
+DROP TABLE IF EXISTS symbols;

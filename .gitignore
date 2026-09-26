@@ -1,0 +1,15 @@
+export/
+flake.lock
+.direnv/
+
+### Rust ###
+debug/
+target/
+**/*.rs.bk
+*.pdb
+
+/postgres_volume
+.env
+
+/todos
+/operational-notes/

@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ["v*"]
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "src/**"
+      - "flake.nix"
+      - "flake.lock"
+      - "rust-toolchain"
+      - "rust-toolchain.toml"
+      - ".github/workflows/ci.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  changes:
+    name: Detect Rust changes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      rust: ${{ steps.filter.outputs.rust == 'true' || steps.all.outputs.rust == 'true' }}
+    steps:
+      - name: Check pull request paths
+        if: github.event_name == 'pull_request'
+        id: filter
+        uses: dorny/paths-filter@v4
+        with:
+          filters: |
+            rust:
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'src/**'
+              - 'flake.nix'
+              - 'flake.lock'
+              - 'rust-toolchain'
+              - 'rust-toolchain.toml'
+              - '.github/workflows/ci.yml'
+      - name: Run checks for other events
+        if: github.event_name != 'pull_request'
+        id: all
+        run: echo "rust=true" >> "$GITHUB_OUTPUT"
+
+  checks:
+    name: Check and build image
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the source
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Install Nix
+        uses: DeterminateSystems/determinate-nix-action@v3
+      - name: Cache Nix store paths
+        uses: DeterminateSystems/magic-nix-cache-action@v15
+      - name: Check Rust formatting
+        run: nix develop --command cargo fmt --all -- --check
+      - name: Run Clippy
+        run: nix develop --command cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - name: Run workspace checks
+        run: nix develop --command cargo check --workspace --locked
+      - name: Build the Docker image
+        run: nix build .#docker --no-link

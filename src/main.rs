@@ -1,0 +1,210 @@
+use bigdecimal::BigDecimal;
+use chrono::{DateTime, Utc};
+use color_eyre::eyre::{eyre, Result, WrapErr};
+use diesel::{Connection, PgConnection};
+use hyperliquid_rust_sdk::{BaseUrl, BookLevel, InfoClient, Message, Subscription};
+use hyperliquid_timescaledb_collector::models::{OrderbookRow, TradeRow};
+use mimalloc::MiMalloc;
+use std::time::Duration;
+use tokio::sync::mpsc;
+use tracing::{error, info};
+
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
+
+const BATCH_CAPACITY: usize = 128;
+const FLUSH_INTERVAL: Duration = Duration::from_secs(1);
+
+enum WriteMsg {
+    Trade(TradeRow),
+    Orderbook(OrderbookRow),
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    dotenv::dotenv().ok();
+    color_eyre::install()?;
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .init();
+
+    let database_url = std::env::var("DATABASE_URL").wrap_err("DATABASE_URL must be set")?;
+    let mut conn = PgConnection::establish(&database_url).wrap_err("connecting to PostgreSQL")?;
+    let mut client = InfoClient::with_reconnect(None, Some(BaseUrl::Mainnet))
+        .await
+        .wrap_err("connecting to Hyperliquid")?;
+    let meta = client.meta().await.wrap_err("loading perpetual markets")?;
+    if meta.universe.is_empty() {
+        return Err(eyre!("Hyperliquid returned no perpetual markets"));
+    }
+    let markets: Vec<String> = meta
+        .universe
+        .into_iter()
+        .map(|market| market.name)
+        .collect();
+    let symbol_ids = hyperliquid_timescaledb_collector::sync_symbols(&markets, &mut conn)?;
+    info!(market_count = markets.len(), "synced perpetual markets");
+
+    let pool = hyperliquid_timescaledb_collector::connection_pool(&database_url)?;
+    let (tx, rx) = mpsc::channel(BATCH_CAPACITY * 4);
+    tokio::spawn(writer_task(rx, pool));
+    let (ws_tx, mut ws_rx) = mpsc::unbounded_channel();
+
+    for market in &markets {
+        client
+            .subscribe(
+                Subscription::L2Book {
+                    coin: market.clone(),
+                },
+                ws_tx.clone(),
+            )
+            .await
+            .wrap_err_with(|| format!("subscribing to {market} order book"))?;
+        client
+            .subscribe(
+                Subscription::Trades {
+                    coin: market.clone(),
+                },
+                ws_tx.clone(),
+            )
+            .await
+            .wrap_err_with(|| format!("subscribing to {market} trades"))?;
+    }
+    info!(
+        market_count = markets.len(),
+        "subscribed to trades and order books"
+    );
+
+    loop {
+        match ws_rx
+            .recv()
+            .await
+            .ok_or_else(|| eyre!("Hyperliquid SDK stream closed"))?
+        {
+            Message::Trades(message) => {
+                for trade in message.data {
+                    let symbol = *symbol_ids
+                        .get(&trade.coin)
+                        .ok_or_else(|| eyre!("unknown trade market {}", trade.coin))?;
+                    let time = millis_to_datetime(trade.time)?;
+                    let hyperliquid_trade_id =
+                        i64::try_from(trade.tid).wrap_err("trade ID exceeds BIGINT")?;
+                    tx.send(WriteMsg::Trade(TradeRow {
+                        time,
+                        symbol,
+                        hyperliquid_trade_id,
+                        trade_hash: trade.hash,
+                        side: trade.side,
+                        price: trade
+                            .px
+                            .parse::<BigDecimal>()
+                            .wrap_err("parsing trade price")?,
+                        size: trade
+                            .sz
+                            .parse::<BigDecimal>()
+                            .wrap_err("parsing trade size")?,
+                    }))
+                    .await
+                    .map_err(|_| eyre!("database writer stopped"))?;
+                }
+            }
+            Message::L2Book(message) => {
+                let symbol = *symbol_ids
+                    .get(&message.data.coin)
+                    .ok_or_else(|| eyre!("unknown order-book market {}", message.data.coin))?;
+                let mut levels = message.data.levels.into_iter();
+                let bids = levels
+                    .next()
+                    .ok_or_else(|| eyre!("order book has no bid levels"))?;
+                let asks = levels
+                    .next()
+                    .ok_or_else(|| eyre!("order book has no ask levels"))?;
+                if levels.next().is_some() {
+                    return Err(eyre!("order book has unexpected level groups"));
+                }
+                let to_json = |levels: Vec<BookLevel>| {
+                    levels.into_iter().map(|level| serde_json::json!({"price": level.px, "size": level.sz, "count": level.n})).collect::<Vec<_>>()
+                };
+                tx.send(WriteMsg::Orderbook(OrderbookRow {
+                    time: millis_to_datetime(message.data.time)?,
+                    symbol,
+                    bids: serde_json::Value::Array(to_json(bids)),
+                    asks: serde_json::Value::Array(to_json(asks)),
+                }))
+                .await
+                .map_err(|_| eyre!("database writer stopped"))?;
+            }
+            Message::HyperliquidError(message) => {
+                return Err(eyre!("Hyperliquid error: {message}"))
+            }
+            Message::NoData | Message::SubscriptionResponse => {}
+            other => return Err(eyre!("unexpected Hyperliquid message: {other:?}")),
+        }
+    }
+}
+
+async fn writer_task(
+    mut rx: mpsc::Receiver<WriteMsg>,
+    pool: diesel::r2d2::Pool<diesel::r2d2::ConnectionManager<PgConnection>>,
+) {
+    let mut ticker = tokio::time::interval(FLUSH_INTERVAL);
+    ticker.tick().await;
+    let mut batch = Vec::with_capacity(BATCH_CAPACITY);
+    loop {
+        tokio::select! {
+            message = rx.recv() => match message {
+                Some(message) => {
+                    batch.push(message);
+                    if batch.len() >= BATCH_CAPACITY { flush(&mut batch, &pool).await; }
+                }
+                None => { flush(&mut batch, &pool).await; return; }
+            },
+            _ = ticker.tick() => flush(&mut batch, &pool).await,
+        }
+    }
+}
+
+async fn flush(
+    batch: &mut Vec<WriteMsg>,
+    pool: &diesel::r2d2::Pool<diesel::r2d2::ConnectionManager<PgConnection>>,
+) {
+    if batch.is_empty() {
+        return;
+    }
+    let drained = std::mem::take(batch);
+    let (mut trades, mut orderbooks) = (Vec::new(), Vec::new());
+    for message in drained {
+        match message {
+            WriteMsg::Trade(row) => trades.push(row),
+            WriteMsg::Orderbook(row) => orderbooks.push(row),
+        }
+    }
+    let pool = pool.clone();
+    let result = tokio::task::spawn_blocking(move || -> Result<()> {
+        let mut conn = pool
+            .get()
+            .wrap_err("getting a pooled database connection")?;
+        conn.transaction::<_, color_eyre::Report, _>(|conn| {
+            hyperliquid_timescaledb_collector::write_trades(&trades, conn)?;
+            hyperliquid_timescaledb_collector::write_orderbooks(&orderbooks, conn)?;
+            Ok(())
+        })
+    })
+    .await;
+    match result {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => {
+            error!("database batch write failed: {error}");
+            std::process::exit(1);
+        }
+        Err(error) => {
+            error!("database writer task failed: {error}");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn millis_to_datetime(millis: u64) -> Result<DateTime<Utc>> {
+    let millis = i64::try_from(millis).wrap_err("timestamp exceeds signed range")?;
+    DateTime::from_timestamp_millis(millis).ok_or_else(|| eyre!("invalid timestamp: {millis}"))
+}
