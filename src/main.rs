@@ -5,6 +5,7 @@ use diesel::{Connection, PgConnection};
 use hyperliquid_rust_sdk::{BaseUrl, BookLevel, InfoClient, Message, Subscription};
 use hyperliquid_timescaledb_collector::models::{OrderbookRow, TradeRow};
 use mimalloc::MiMalloc;
+use std::collections::HashMap;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::{error, info};
@@ -37,20 +38,47 @@ async fn main() -> Result<()> {
     if meta.universe.is_empty() {
         return Err(eyre!("Hyperliquid returned no perpetual markets"));
     }
-    let markets: Vec<String> = meta
+    let spot_meta = client.spot_meta().await.wrap_err("loading spot markets")?;
+    if spot_meta.universe.is_empty() {
+        return Err(eyre!("Hyperliquid returned no spot markets"));
+    }
+    let token_names: HashMap<usize, &str> = spot_meta
+        .tokens
+        .iter()
+        .map(|token| (token.index, token.name.as_str()))
+        .collect();
+    let mut markets: Vec<(String, &'static str)> = meta
         .universe
         .into_iter()
-        .map(|market| market.name)
+        .map(|market| (market.name, "perp"))
         .collect();
+    for market in spot_meta.universe {
+        let base = token_names
+            .get(&market.tokens[0])
+            .ok_or_else(|| eyre!("spot market {} has an unknown base token", market.name))?;
+        let quote = token_names
+            .get(&market.tokens[1])
+            .ok_or_else(|| eyre!("spot market {} has an unknown quote token", market.name))?;
+        let coin = if *base == "PURR" && *quote == "USDC" {
+            "PURR/USDC".to_string()
+        } else {
+            format!("@{}", market.index)
+        };
+        markets.push((coin, "spot"));
+    }
+    let market_names: Vec<String> = markets.iter().map(|(name, _)| name.clone()).collect();
     let symbol_ids = hyperliquid_timescaledb_collector::sync_symbols(&markets, &mut conn)?;
-    info!(market_count = markets.len(), "synced perpetual markets");
+    info!(
+        market_count = markets.len(),
+        "synced perpetual and spot markets"
+    );
 
     let pool = hyperliquid_timescaledb_collector::connection_pool(&database_url)?;
     let (tx, rx) = mpsc::channel(BATCH_CAPACITY * 4);
     tokio::spawn(writer_task(rx, pool));
     let (ws_tx, mut ws_rx) = mpsc::unbounded_channel();
 
-    for market in &markets {
+    for market in &market_names {
         client
             .subscribe(
                 Subscription::L2Book {
@@ -71,7 +99,7 @@ async fn main() -> Result<()> {
             .wrap_err_with(|| format!("subscribing to {market} trades"))?;
     }
     info!(
-        market_count = markets.len(),
+        market_count = market_names.len(),
         "subscribed to trades and order books"
     );
 

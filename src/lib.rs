@@ -17,13 +17,31 @@ pub fn connection_pool(url: &str) -> Result<Pool<ConnectionManager<PgConnection>
         .wrap_err("creating PostgreSQL connection pool")
 }
 
-pub fn sync_symbols(markets: &[String], conn: &mut PgConnection) -> Result<HashMap<String, i32>> {
+pub fn sync_symbols(
+    markets: &[(String, &'static str)],
+    conn: &mut PgConnection,
+) -> Result<HashMap<String, i32>> {
+    let mut unique_names = HashMap::new();
+    for (name, market_type) in markets {
+        if !matches!(*market_type, "perp" | "spot") {
+            return Err(color_eyre::eyre::eyre!(
+                "unsupported market type {market_type:?}"
+            ));
+        }
+        if let Some(previous_type) = unique_names.insert(name.as_str(), *market_type) {
+            if previous_type != *market_type {
+                return Err(color_eyre::eyre::eyre!(
+                    "market name {name:?} has conflicting market types"
+                ));
+            }
+        }
+    }
     conn.transaction::<_, color_eyre::Report, _>(|conn| {
-        for market in markets {
+        for (market, market_type) in markets {
             insert_into(symbols::table)
                 .values(NewSymbol {
                     name: market,
-                    market_type: "perp",
+                    market_type,
                 })
                 .on_conflict(symbols::name)
                 .do_nothing()
