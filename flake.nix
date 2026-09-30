@@ -1,5 +1,5 @@
 {
-  description = "Development shell and Docker image for the Hyperliquid market-data collector";
+  description = "Development shell and Docker image for the Hyperliquid market-data ingestor";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
   inputs.rust-overlay.url = "github:oxalica/rust-overlay";
@@ -33,7 +33,7 @@
           in value == root || source || buildFile;
       };
       app = staticRustPlatform.buildRustPackage {
-        pname = "hyperliquid-timescaledb-collector";
+        pname = "hyperliquid-timescaledb-ingestor";
         version = "0.1.0";
         src = rustSource;
         cargoLock.lockFile = ./Cargo.lock;
@@ -45,10 +45,10 @@
       packages.${system} = {
         default = app;
         docker = pkgs.dockerTools.buildLayeredImage {
-          name = "hyperliquid-timescaledb-collector";
+          name = "hyperliquid-timescaledb-ingestor";
           tag = "latest";
           config = {
-            Cmd = [ "${app}/bin/hyperliquid-timescaledb-collector" ];
+            Cmd = [ "${app}/bin/hyperliquid-timescaledb-ingestor" ];
             Env = [ "SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt" ];
           };
           contents = [ pkgs.cacert ];

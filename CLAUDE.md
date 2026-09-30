@@ -22,9 +22,9 @@ Read `README.md` before you change the project. Maintain `README.md` and `CLAUDE
 ## Development
 
 - Copy `.env.example` to `.env` before deployment.
-- Apply migrations before you start the collector.
+- Apply migrations before you start the ingestor.
 - Use `nix run .#compose -- down` to stop the Compose service.
-- Build the Compose collector image from `Dockerfile` with `docker compose up --build`.
+- Build the Compose ingestor image from `Dockerfile` with `docker compose up --build`.
 - Use host networking to connect to a database published on `127.0.0.1:5433` on the Docker host.
 - Keep `.env` local. Do not commit it.
 - Do not log database connection strings.

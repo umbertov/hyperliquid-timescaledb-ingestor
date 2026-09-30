@@ -2092,7 +2092,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "hyperliquid-timescaledb-collector"
+name = "hyperliquid-timescaledb-ingestor"
 version = "0.1.0"
 dependencies = [
  "arrow-array",

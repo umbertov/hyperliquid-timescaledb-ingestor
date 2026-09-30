@@ -1,6 +1,6 @@
 [package]
 edition = "2021"
-name = "hyperliquid-timescaledb-collector"
+name = "hyperliquid-timescaledb-ingestor"
 version = "0.1.0"
 
 [profile.release]

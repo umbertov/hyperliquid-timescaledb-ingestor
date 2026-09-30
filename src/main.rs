@@ -4,7 +4,7 @@ use clap::{Parser, Subcommand};
 use color_eyre::eyre::{eyre, Result, WrapErr};
 use diesel::{Connection, PgConnection};
 use hyperliquid_rust_sdk::{BaseUrl, BookLevel, InfoClient, Message, Subscription};
-use hyperliquid_timescaledb_collector::models::{OrderbookRow, TradeRow};
+use hyperliquid_timescaledb_ingestor::models::{OrderbookRow, TradeRow};
 use mimalloc::MiMalloc;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -19,7 +19,7 @@ const BATCH_CAPACITY: usize = 128;
 const FLUSH_INTERVAL: Duration = Duration::from_secs(1);
 
 #[derive(Parser)]
-#[command(name = "hyperliquid-timescaledb-collector")]
+#[command(name = "hyperliquid-timescaledb-ingestor")]
 struct Args {
     #[command(subcommand)]
     command: Option<Command>,
@@ -58,7 +58,7 @@ async fn main() -> Result<()> {
     {
         let database_url = std::env::var("DATABASE_URL").wrap_err("DATABASE_URL must be set")?;
         return tokio::task::spawn_blocking(move || {
-            hyperliquid_timescaledb_collector::export::export_parquet(
+            hyperliquid_timescaledb_ingestor::export::export_parquet(
                 &database_url,
                 &output_dir,
                 &symbols,
@@ -107,13 +107,13 @@ async fn main() -> Result<()> {
         markets.push((coin, "spot"));
     }
     let market_names: Vec<String> = markets.iter().map(|(name, _)| name.clone()).collect();
-    let symbol_ids = hyperliquid_timescaledb_collector::sync_symbols(&markets, &mut conn)?;
+    let symbol_ids = hyperliquid_timescaledb_ingestor::sync_symbols(&markets, &mut conn)?;
     info!(
         market_count = markets.len(),
         "synced perpetual and spot markets"
     );
 
-    let pool = hyperliquid_timescaledb_collector::connection_pool(&database_url)?;
+    let pool = hyperliquid_timescaledb_ingestor::connection_pool(&database_url)?;
     let (tx, rx) = mpsc::channel(BATCH_CAPACITY * 4);
     tokio::spawn(writer_task(rx, pool));
     let (ws_tx, mut ws_rx) = mpsc::unbounded_channel();
@@ -253,8 +253,8 @@ async fn flush(
             .get()
             .wrap_err("getting a pooled database connection")?;
         conn.transaction::<_, color_eyre::Report, _>(|conn| {
-            hyperliquid_timescaledb_collector::write_trades(&trades, conn)?;
-            hyperliquid_timescaledb_collector::write_orderbooks(&orderbooks, conn)?;
+            hyperliquid_timescaledb_ingestor::write_trades(&trades, conn)?;
+            hyperliquid_timescaledb_ingestor::write_orderbooks(&orderbooks, conn)?;
             Ok(())
         })
     })

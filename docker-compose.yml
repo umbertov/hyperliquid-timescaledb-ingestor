@@ -1,6 +1,6 @@
 services:
-  collector:
-    image: ${COLLECTOR_IMAGE:-hyperliquid-timescaledb-collector:local}
+  ingestor:
+    image: ${INGESTOR_IMAGE:-hyperliquid-timescaledb-ingestor:local}
     build:
       context: .
       dockerfile: Dockerfile

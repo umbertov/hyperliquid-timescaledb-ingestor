@@ -1,4 +1,4 @@
-# hyperliquid-timescaledb-collector
+# hyperliquid-timescaledb-ingestor
 
 This Rust service stores Hyperliquid market data in TimescaleDB. It syncs spot and perpetual markets, then stores live trades and level-two order-book snapshots.
 
@@ -10,25 +10,25 @@ Copy the sample settings file and edit `DATABASE_URL` if the database address di
 cp .env.example .env
 ```
 
-Apply each `migrations/*/up.sql` file in timestamp order. Start the collector:
+Apply each `migrations/*/up.sql` file in timestamp order. Start the ingestor:
 
 ```sh
 nix run .#up
 ```
 
-The collector connects to the database in `DATABASE_URL`. The database must run PostgreSQL with TimescaleDB. Docker must run for the Compose deployment.
+The ingestor connects to the database in `DATABASE_URL`. The database must run PostgreSQL with TimescaleDB. Docker must run for the Compose deployment.
 
-Compose builds the collector image from `Dockerfile`. The collector uses host networking to reach a database that Docker publishes on the host loopback address. The sample connects to `127.0.0.1:5433`.
+Compose builds the ingestor image from `Dockerfile`. The ingestor uses host networking to reach a database that Docker publishes on the host loopback address. The sample connects to `127.0.0.1:5433`.
 
-Run `nix run .#compose -- logs -f collector` to read service logs. Run `nix run .#compose -- down` to stop the service.
-Set `COLLECTOR_IMAGE` to set the local image name. Compose builds that image when it starts the service.
+Run `nix run .#compose -- logs -f ingestor` to read service logs. Run `nix run .#compose -- down` to stop the service.
+Set `INGESTOR_IMAGE` to set the local image name. Compose builds that image when it starts the service.
 
 ## Data
 
 The `symbols` table stores spot and perpetual market names. The `trades` table stores public trade events. The `orderbook_messages` table stores full bid and ask levels as JSONB arrays.
 Spot names use `@index` values. The `PURR/USDC` market uses that pair name.
 
-The collector uses Hyperliquid's public Rust SDK for market metadata and WebSocket subscriptions. Private account data is out of scope.
+The ingestor uses Hyperliquid's public Rust SDK for market metadata and WebSocket subscriptions. Private account data is out of scope.
 
 ## Export data
 

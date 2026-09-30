@@ -79,7 +79,7 @@ jobs:
         run: |
           image_path="$(nix build .#docker --no-link --print-out-paths)"
           if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
-            cp "$image_path" "$RUNNER_TEMP/hyperliquid-timescaledb-collector.tar.gz"
+            cp "$image_path" "$RUNNER_TEMP/hyperliquid-timescaledb-ingestor.tar.gz"
           fi
 
       - name: Upload the Docker image
@@ -87,7 +87,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: docker-image
-          path: ${{ runner.temp }}/hyperliquid-timescaledb-collector.tar.gz
+          path: ${{ runner.temp }}/hyperliquid-timescaledb-ingestor.tar.gz
           compression-level: 0
           if-no-files-found: error
           retention-days: 1
@@ -107,7 +107,7 @@ jobs:
           name: docker-image
           path: ${{ runner.temp }}/docker-image
       - name: Load the Docker image
-        run: docker load --input "$RUNNER_TEMP/docker-image/hyperliquid-timescaledb-collector.tar.gz"
+        run: docker load --input "$RUNNER_TEMP/docker-image/hyperliquid-timescaledb-ingestor.tar.gz"
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v4
         with:
@@ -122,7 +122,7 @@ jobs:
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           image="ghcr.io/${GITHUB_REPOSITORY,,}"
-          local_image="hyperliquid-timescaledb-collector:latest"
+          local_image="hyperliquid-timescaledb-ingestor:latest"
           sha_tag="sha-${GITHUB_SHA::12}"
           docker tag "$local_image" "$image:$sha_tag"
           docker push "$image:$sha_tag"
