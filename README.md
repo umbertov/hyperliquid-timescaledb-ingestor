@@ -18,8 +18,10 @@ nix run .#up
 
 The collector connects to the database in `DATABASE_URL`. The database must run PostgreSQL with TimescaleDB. Docker must run for the Compose deployment.
 
+Compose builds the collector image from `Dockerfile`. The collector uses host networking to reach a database that Docker publishes on the host loopback address. The sample connects to `127.0.0.1:5433`.
+
 Run `nix run .#compose -- logs -f collector` to read service logs. Run `nix run .#compose -- down` to stop the service.
-Set `COLLECTOR_IMAGE` to select a container image. The default uses the image that `nix run .#up` builds.
+Set `COLLECTOR_IMAGE` to set the local image name. Compose builds that image when it starts the service.
 
 ## Data
 
@@ -42,6 +44,8 @@ nix run .#default -- export --output-dir ./export --dataset trades --symbol BTC 
 Set `--dataset` to `both`, `trades`, or `orderbooks`. Repeat `--symbol` to select market names. An empty symbol list selects all markets. Price and size fields use decimal text to preserve exact values. The command fails if an output file already exists.
 
 The export directory contains `trades.parquet` and `orderbook_messages.parquet`. The command creates only the files for the selected dataset.
+
+The Dockerfile builds the Nix default package and copies its binary into a small runtime image. CI builds the flake Docker image with the Nix cache. CI does not use `Dockerfile`.
 
 CI checks formatting, Clippy, and workspace tests before it builds the image. Pushes to `main` publish `latest` and a commit tag to GitHub Container Registry. Version tags publish the matching version tag.
 

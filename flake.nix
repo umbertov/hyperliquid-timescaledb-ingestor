@@ -59,15 +59,13 @@
           type = "app";
           program = "${pkgs.writeShellApplication {
             name = "hyperliquid-up";
-            runtimeInputs = [ pkgs.docker pkgs.docker-compose pkgs.nix ];
+            runtimeInputs = [ pkgs.docker pkgs.docker-compose ];
             text = ''
               if [ ! -f "$PWD/flake.nix" ] || [ ! -f "$PWD/docker-compose.yml" ]; then
                 echo "Run this command from the project root." >&2
                 exit 1
               fi
-              image="$(nix build .#docker --no-link --print-out-paths)"
-              docker load --input "$image"
-              exec docker-compose --project-directory "$PWD" -f "$PWD/docker-compose.yml" up -d "$@"
+              exec docker-compose --project-directory "$PWD" -f "$PWD/docker-compose.yml" up --build -d "$@"
             '';
           }}/bin/hyperliquid-up";
         };
