@@ -17,6 +17,9 @@ static GLOBAL: MiMalloc = MiMalloc;
 
 const BATCH_CAPACITY: usize = 128;
 const FLUSH_INTERVAL: Duration = Duration::from_secs(1);
+const SUBSCRIPTIONS_PER_MARKET: usize = 2;
+const MAX_SUBSCRIPTIONS_PER_CONNECTION: usize = 1_000;
+const MAX_WEBSOCKET_CONNECTIONS: usize = 10;
 
 #[derive(Parser)]
 #[command(name = "hyperliquid-timescaledb-ingestor")]
@@ -71,14 +74,20 @@ async fn main() -> Result<()> {
 
     let database_url = std::env::var("DATABASE_URL").wrap_err("DATABASE_URL must be set")?;
     let mut conn = PgConnection::establish(&database_url).wrap_err("connecting to PostgreSQL")?;
-    let mut client = InfoClient::with_reconnect(None, Some(BaseUrl::Mainnet))
+    let info_client = InfoClient::with_reconnect(None, Some(BaseUrl::Mainnet))
         .await
         .wrap_err("connecting to Hyperliquid")?;
-    let meta = client.meta().await.wrap_err("loading perpetual markets")?;
+    let meta = info_client
+        .meta()
+        .await
+        .wrap_err("loading perpetual markets")?;
     if meta.universe.is_empty() {
         return Err(eyre!("Hyperliquid returned no perpetual markets"));
     }
-    let spot_meta = client.spot_meta().await.wrap_err("loading spot markets")?;
+    let spot_meta = info_client
+        .spot_meta()
+        .await
+        .wrap_err("loading spot markets")?;
     if spot_meta.universe.is_empty() {
         return Err(eyre!("Hyperliquid returned no spot markets"));
     }
@@ -118,29 +127,44 @@ async fn main() -> Result<()> {
     tokio::spawn(writer_task(rx, pool));
     let (ws_tx, mut ws_rx) = mpsc::unbounded_channel();
 
-    for market in &market_names {
-        client
-            .subscribe(
-                Subscription::L2Book {
-                    coin: market.clone(),
-                },
-                ws_tx.clone(),
-            )
+    let markets_per_connection = MAX_SUBSCRIPTIONS_PER_CONNECTION / SUBSCRIPTIONS_PER_MARKET;
+    let connection_count = market_names.len().div_ceil(markets_per_connection);
+    if connection_count > MAX_WEBSOCKET_CONNECTIONS {
+        return Err(eyre!(
+            "market count requires {connection_count} WebSocket connections, above the limit of {MAX_WEBSOCKET_CONNECTIONS}"
+        ));
+    }
+
+    let mut websocket_clients = Vec::with_capacity(connection_count);
+    for markets in market_names.chunks(markets_per_connection) {
+        let mut client = InfoClient::with_reconnect(None, Some(BaseUrl::Mainnet))
             .await
-            .wrap_err_with(|| format!("subscribing to {market} order book"))?;
-        client
-            .subscribe(
-                Subscription::Trades {
-                    coin: market.clone(),
-                },
-                ws_tx.clone(),
-            )
-            .await
-            .wrap_err_with(|| format!("subscribing to {market} trades"))?;
+            .wrap_err("connecting to Hyperliquid WebSocket")?;
+        for market in markets {
+            client
+                .subscribe(
+                    Subscription::L2Book {
+                        coin: market.clone(),
+                    },
+                    ws_tx.clone(),
+                )
+                .await
+                .wrap_err_with(|| format!("subscribing to {market} order book"))?;
+            client
+                .subscribe(
+                    Subscription::Trades {
+                        coin: market.clone(),
+                    },
+                    ws_tx.clone(),
+                )
+                .await
+                .wrap_err_with(|| format!("subscribing to {market} trades"))?;
+        }
+        websocket_clients.push(client);
     }
     info!(
         market_count = market_names.len(),
-        "subscribed to trades and order books"
+        connection_count, "subscribed to trades and order books"
     );
 
     loop {
