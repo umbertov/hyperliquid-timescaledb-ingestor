@@ -16,6 +16,8 @@ Apply each `migrations/*/up.sql` file in timestamp order. Start the ingestor:
 nix run .#up
 ```
 
+The migrations create time-partitioned hypertables and disable columnstore storage. The trade unique index enforces event deduplication. They add no retention policy or read optimization index.
+
 The ingestor connects to the database in `DATABASE_URL`. The database must run PostgreSQL with TimescaleDB. Docker must run for the Compose deployment.
 
 Compose builds the ingestor image from `Dockerfile`. The ingestor uses host networking to reach a database that Docker publishes on the host loopback address. The sample connects to `127.0.0.1:5433`.

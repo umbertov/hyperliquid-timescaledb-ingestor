@@ -8,6 +8,9 @@ Read `README.md` before you change the project. Maintain `README.md` and `CLAUDE
 - Store trades and order-book messages in TimescaleDB hypertables.
 - Store bid and ask levels as JSONB arrays.
 - Use exchange trade IDs and timestamps to deduplicate trade events.
+- Declare trade prices and sizes as `NUMERIC`.
+- Keep hypertable options minimal and disable columnstore storage.
+- Do not add retention policies or read optimization indexes without a measured need.
 - Use `@index` for spot symbols, except `PURR/USDC`.
 - Export trades and order-book messages as Parquet in bounded batches.
 - Keep exported prices and sizes as decimal text to preserve exact values.

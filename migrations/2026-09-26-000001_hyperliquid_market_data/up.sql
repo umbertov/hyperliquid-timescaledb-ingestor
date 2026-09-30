@@ -13,15 +13,13 @@ CREATE TABLE IF NOT EXISTS trades (
   hyperliquid_trade_id BIGINT NOT NULL,
   trade_hash TEXT NOT NULL,
   side TEXT NOT NULL CHECK (side IN ('B', 'A')),
-  price DOUBLE PRECISION NOT NULL,
-  size DOUBLE PRECISION NOT NULL,
+  price NUMERIC NOT NULL,
+  size NUMERIC NOT NULL,
   PRIMARY KEY (time, id)
 ) WITH (
   tsdb.hypertable,
   tsdb.partition_column='time',
-  tsdb.segmentby='symbol',
-  tsdb.orderby='time',
-  tsdb.chunk_interval='1 day'
+  timescaledb.enable_columnstore=false
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS trades_dedup_uniq
@@ -37,18 +35,5 @@ CREATE TABLE IF NOT EXISTS orderbook_messages (
 ) WITH (
   tsdb.hypertable,
   tsdb.partition_column='time',
-  tsdb.segmentby='symbol',
-  tsdb.orderby='time',
-  tsdb.chunk_interval='1 day'
-);
-
-CREATE INDEX IF NOT EXISTS orderbook_messages_symbol_time_idx
-  ON orderbook_messages (symbol, time DESC);
-CREATE INDEX IF NOT EXISTS orderbook_messages_time_brin
-  ON orderbook_messages USING BRIN(time);
-
-SELECT add_retention_policy(
-  'orderbook_messages',
-  drop_after => INTERVAL '4 days',
-  if_not_exists => TRUE
+  timescaledb.enable_columnstore=false
 );
