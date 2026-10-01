@@ -10,7 +10,7 @@ Copy the sample settings file and edit `DATABASE_URL` if the database address di
 cp .env.example .env
 ```
 
-Apply each `migrations/*/up.sql` file in timestamp order. Start the ingestor:
+Apply each `migrations/*/up.sql` file in timestamp order. Start paired collection:
 
 ```sh
 nix run .#up
@@ -30,7 +30,17 @@ Set `INGESTOR_IMAGE` to set the local image name. Compose builds that image when
 The `symbols` table stores spot and perpetual market names. The `trades` table stores public trade events. The `orderbook_messages` table stores full bid and ask levels as JSONB arrays.
 Spot names use `@index` values. The `PURR/USDC` market uses that pair name.
 
-The ingestor uses Hyperliquid's public Rust SDK for market metadata and WebSocket subscriptions. It selects symbols that have both spot and perpetual markets. It subscribes to trades and order books for both markets. Startup fails if those pairs exceed 500 markets per IP. Private account data is out of scope.
+The ingestor uses Hyperliquid's public Rust SDK for market metadata and WebSocket subscriptions. Direct runs collect all markets by default. Hyperliquid limits each IP to 1,000 WebSocket subscriptions. Each market uses two subscriptions. Startup fails if all markets exceed that limit.
+
+Pass `--paired-perp-spot` to collect only symbols with both spot and perpetual markets. The ingestor subscribes to trades and order books for both markets. It recognizes known spot token name remappings, such as `UBTC` to `BTC`.
+
+Run paired collection directly from the project root:
+
+```sh
+nix run .#default -- --paired-perp-spot
+```
+
+Compose passes `--paired-perp-spot` to the ingestor by default. Run `nix run .#compose -- down` to stop the service.
 
 ## Export data
 

@@ -5,6 +5,7 @@ services:
       context: .
       dockerfile: Dockerfile
     pull_policy: build
+    command: ["--paired-perp-spot"]
     restart: unless-stopped
     network_mode: host
     environment:

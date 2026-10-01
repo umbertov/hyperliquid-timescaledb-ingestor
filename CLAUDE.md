@@ -34,7 +34,8 @@ Read `README.md` before you change the project. Maintain `README.md` and `CLAUDE
 - Use fixtures for automated tests that need market data.
 - Do not call the live API repeatedly from a test suite.
 - Keep WebSocket subscriptions below the 1,000 subscription limit per IP.
-- Select only symbols with both spot and perpetual markets.
+- With `--paired-perp-spot`, select only symbols with both spot and perpetual markets.
+- Use `--paired-perp-spot` to enable paired market selection.
 
 ## CI
 

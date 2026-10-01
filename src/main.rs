@@ -23,6 +23,11 @@ const MAX_MARKETS: usize = 500;
 #[derive(Parser)]
 #[command(name = "hyperliquid-timescaledb-ingestor")]
 struct Args {
+    #[arg(
+        long,
+        help = "Collect only symbols with both spot and perpetual markets"
+    )]
+    paired_perp_spot: bool,
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -52,11 +57,15 @@ async fn main() -> Result<()> {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
+    let args = Args::parse();
+    if args.paired_perp_spot && args.command.is_some() {
+        return Err(eyre!("--paired-perp-spot applies only to live collection"));
+    }
     if let Some(Command::Export {
         output_dir,
         symbols,
         dataset,
-    }) = Args::parse().command
+    }) = args.command
     {
         let database_url = std::env::var("DATABASE_URL").wrap_err("DATABASE_URL must be set")?;
         return tokio::task::spawn_blocking(move || {
@@ -115,7 +124,25 @@ async fn main() -> Result<()> {
         };
         spot_markets.push((coin, (*base).to_string()));
     }
-    let markets = select_paired_markets(&perpetual_markets, &spot_markets, MAX_MARKETS)?;
+    let markets = if args.paired_perp_spot {
+        select_paired_markets(&perpetual_markets, &spot_markets, MAX_MARKETS)?
+    } else {
+        let markets = perpetual_markets
+            .iter()
+            .cloned()
+            .map(|name| (name, "perp"))
+            .chain(spot_markets.iter().map(|(name, _)| (name.clone(), "spot")))
+            .collect::<Vec<_>>();
+        if markets.len() > MAX_MARKETS {
+            return Err(eyre!(
+                "all {} markets need {} subscriptions, above the per-IP limit of {}; run with --paired-perp-spot",
+                markets.len(),
+                markets.len() * SUBSCRIPTIONS_PER_MARKET,
+                MAX_MARKETS * SUBSCRIPTIONS_PER_MARKET
+            ));
+        }
+        markets
+    };
     let market_names: Vec<String> = markets.iter().map(|(name, _)| name.clone()).collect();
     let symbol_ids = hyperliquid_timescaledb_ingestor::sync_symbols(&markets, &mut conn)?;
     info!(
@@ -236,7 +263,10 @@ fn select_paired_markets(
     spot_markets: &[(String, String)],
     limit: usize,
 ) -> Result<Vec<(String, &'static str)>> {
-    let spot_bases: HashSet<&str> = spot_markets.iter().map(|(_, base)| base.as_str()).collect();
+    let spot_bases: HashSet<&str> = spot_markets
+        .iter()
+        .map(|(_, base)| perpetual_symbol_for_spot_base(base))
+        .collect();
     let paired_perpetuals: Vec<&String> = perpetual_markets
         .iter()
         .filter(|name| spot_bases.contains(name.as_str()))
@@ -254,7 +284,7 @@ fn select_paired_markets(
         push_market(&mut selected, &mut selected_names, (*name).clone(), "perp");
     }
     for (name, base) in spot_markets {
-        if paired_bases.contains(base.as_str()) {
+        if paired_bases.contains(perpetual_symbol_for_spot_base(base)) {
             push_market(&mut selected, &mut selected_names, name.clone(), "spot");
         }
     }
@@ -278,6 +308,25 @@ fn select_paired_markets(
         "selected markets with both spot and perpetual data"
     );
     Ok(selected)
+}
+
+fn perpetual_symbol_for_spot_base(base: &str) -> &str {
+    match base {
+        "UBTC" => "BTC",
+        "UETH" => "ETH",
+        "USOL" => "SOL",
+        "UZEC" => "ZEC",
+        "ONEAR" => "NEAR",
+        "UENA" => "ENA",
+        "UXPL" => "XPL",
+        "HPENGU" => "PENGU",
+        "UAVAX" => "AVAX",
+        "HSEI" => "SEI",
+        "UFART" => "FARTCOIN",
+        "UUUSPX" => "SPX",
+        "UVIRT" => "VIRTUAL",
+        _ => base,
+    }
 }
 
 fn push_market(
