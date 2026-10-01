@@ -6,7 +6,7 @@ use diesel::{Connection, PgConnection};
 use hyperliquid_rust_sdk::{BaseUrl, BookLevel, InfoClient, Message, Subscription};
 use hyperliquid_timescaledb_ingestor::models::{OrderbookRow, TradeRow};
 use mimalloc::MiMalloc;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -18,8 +18,7 @@ static GLOBAL: MiMalloc = MiMalloc;
 const BATCH_CAPACITY: usize = 128;
 const FLUSH_INTERVAL: Duration = Duration::from_secs(1);
 const SUBSCRIPTIONS_PER_MARKET: usize = 2;
-const MAX_SUBSCRIPTIONS_PER_CONNECTION: usize = 1_000;
-const MAX_WEBSOCKET_CONNECTIONS: usize = 10;
+const MAX_MARKETS: usize = 500;
 
 #[derive(Parser)]
 #[command(name = "hyperliquid-timescaledb-ingestor")]
@@ -96,11 +95,12 @@ async fn main() -> Result<()> {
         .iter()
         .map(|token| (token.index, token.name.as_str()))
         .collect();
-    let mut markets: Vec<(String, &'static str)> = meta
+    let perpetual_markets: Vec<String> = meta
         .universe
         .into_iter()
-        .map(|market| (market.name, "perp"))
+        .map(|market| market.name)
         .collect();
+    let mut spot_markets = Vec::with_capacity(spot_meta.universe.len());
     for market in spot_meta.universe {
         let base = token_names
             .get(&market.tokens[0])
@@ -113,8 +113,9 @@ async fn main() -> Result<()> {
         } else {
             format!("@{}", market.index)
         };
-        markets.push((coin, "spot"));
+        spot_markets.push((coin, (*base).to_string()));
     }
+    let markets = select_paired_markets(&perpetual_markets, &spot_markets, MAX_MARKETS)?;
     let market_names: Vec<String> = markets.iter().map(|(name, _)| name.clone()).collect();
     let symbol_ids = hyperliquid_timescaledb_ingestor::sync_symbols(&markets, &mut conn)?;
     info!(
@@ -127,44 +128,33 @@ async fn main() -> Result<()> {
     tokio::spawn(writer_task(rx, pool));
     let (ws_tx, mut ws_rx) = mpsc::unbounded_channel();
 
-    let markets_per_connection = MAX_SUBSCRIPTIONS_PER_CONNECTION / SUBSCRIPTIONS_PER_MARKET;
-    let connection_count = market_names.len().div_ceil(markets_per_connection);
-    if connection_count > MAX_WEBSOCKET_CONNECTIONS {
-        return Err(eyre!(
-            "market count requires {connection_count} WebSocket connections, above the limit of {MAX_WEBSOCKET_CONNECTIONS}"
-        ));
-    }
-
-    let mut websocket_clients = Vec::with_capacity(connection_count);
-    for markets in market_names.chunks(markets_per_connection) {
-        let mut client = InfoClient::with_reconnect(None, Some(BaseUrl::Mainnet))
+    let mut websocket_client = InfoClient::with_reconnect(None, Some(BaseUrl::Mainnet))
+        .await
+        .wrap_err("connecting to Hyperliquid WebSocket")?;
+    for market in &market_names {
+        websocket_client
+            .subscribe(
+                Subscription::L2Book {
+                    coin: market.clone(),
+                },
+                ws_tx.clone(),
+            )
             .await
-            .wrap_err("connecting to Hyperliquid WebSocket")?;
-        for market in markets {
-            client
-                .subscribe(
-                    Subscription::L2Book {
-                        coin: market.clone(),
-                    },
-                    ws_tx.clone(),
-                )
-                .await
-                .wrap_err_with(|| format!("subscribing to {market} order book"))?;
-            client
-                .subscribe(
-                    Subscription::Trades {
-                        coin: market.clone(),
-                    },
-                    ws_tx.clone(),
-                )
-                .await
-                .wrap_err_with(|| format!("subscribing to {market} trades"))?;
-        }
-        websocket_clients.push(client);
+            .wrap_err_with(|| format!("subscribing to {market} order book"))?;
+        websocket_client
+            .subscribe(
+                Subscription::Trades {
+                    coin: market.clone(),
+                },
+                ws_tx.clone(),
+            )
+            .await
+            .wrap_err_with(|| format!("subscribing to {market} trades"))?;
     }
     info!(
         market_count = market_names.len(),
-        connection_count, "subscribed to trades and order books"
+        subscription_count = market_names.len() * SUBSCRIPTIONS_PER_MARKET,
+        "subscribed to trades and order books"
     );
 
     loop {
@@ -227,11 +217,77 @@ async fn main() -> Result<()> {
                 .map_err(|_| eyre!("database writer stopped"))?;
             }
             Message::HyperliquidError(message) => {
-                return Err(eyre!("Hyperliquid error: {message}"))
+                if message.starts_with("Reader error:")
+                    || message.starts_with("Reader text conversion error:")
+                {
+                    tracing::warn!("WebSocket reader error; SDK will reconnect: {message}");
+                    continue;
+                }
+                return Err(eyre!("Hyperliquid error: {message}"));
             }
             Message::NoData | Message::SubscriptionResponse => {}
             other => return Err(eyre!("unexpected Hyperliquid message: {other:?}")),
         }
+    }
+}
+
+fn select_paired_markets(
+    perpetual_markets: &[String],
+    spot_markets: &[(String, String)],
+    limit: usize,
+) -> Result<Vec<(String, &'static str)>> {
+    let spot_bases: HashSet<&str> = spot_markets.iter().map(|(_, base)| base.as_str()).collect();
+    let paired_perpetuals: Vec<&String> = perpetual_markets
+        .iter()
+        .filter(|name| spot_bases.contains(name.as_str()))
+        .collect();
+    if paired_perpetuals.is_empty() {
+        return Err(eyre!(
+            "Hyperliquid returned no symbols with both spot and perpetual markets"
+        ));
+    }
+    let paired_bases: HashSet<&str> = paired_perpetuals.iter().map(|name| name.as_str()).collect();
+    let mut selected = Vec::with_capacity(paired_perpetuals.len() * 2);
+    let mut selected_names = HashSet::with_capacity(limit);
+
+    for name in &paired_perpetuals {
+        push_market(&mut selected, &mut selected_names, (*name).clone(), "perp");
+    }
+    for (name, base) in spot_markets {
+        if paired_bases.contains(base.as_str()) {
+            push_market(&mut selected, &mut selected_names, name.clone(), "spot");
+        }
+    }
+    if selected.len() > limit {
+        return Err(eyre!(
+            "{} paired spot and perpetual markets need {} subscriptions, above the limit of {}",
+            selected.len(),
+            selected.len() * SUBSCRIPTIONS_PER_MARKET,
+            limit * SUBSCRIPTIONS_PER_MARKET
+        ));
+    }
+    let paired_perpetual_count = paired_perpetuals.len();
+    let perpetual_count = selected.iter().filter(|(_, kind)| *kind == "perp").count();
+    let spot_count = selected.len() - perpetual_count;
+    info!(
+        market_count = selected.len(),
+        paired_perpetual_count,
+        perpetual_count,
+        spot_count,
+        subscription_count = selected.len() * SUBSCRIPTIONS_PER_MARKET,
+        "selected markets with both spot and perpetual data"
+    );
+    Ok(selected)
+}
+
+fn push_market(
+    selected: &mut Vec<(String, &'static str)>,
+    selected_names: &mut HashSet<String>,
+    name: String,
+    kind: &'static str,
+) {
+    if selected_names.insert(name.clone()) {
+        selected.push((name, kind));
     }
 }
 
