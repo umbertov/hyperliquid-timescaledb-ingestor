@@ -1,15 +1,23 @@
+pub mod bbo;
 pub mod export;
 pub mod models;
 pub mod schema;
 
-use color_eyre::eyre::{Result, WrapErr};
+use chrono::{DateTime, Utc};
+use color_eyre::eyre::{eyre, Result, WrapErr};
 use diesel::dsl::insert_into;
 use diesel::pg::PgConnection;
 use diesel::prelude::*;
 use diesel::r2d2::{ConnectionManager, Pool};
-use models::{NewSymbol, OrderbookRow, Symbol, TradeRow};
-use schema::{orderbook_messages, symbols, trades};
+use models::{BboRow, NewSymbol, OrderbookRow, Symbol, TradeRow};
+use schema::{bbo_messages, orderbook_messages, symbols, trades};
 use std::collections::HashMap;
+
+/// Converts a Hyperliquid millisecond timestamp into a UTC `DateTime`.
+pub fn millis_to_datetime(millis: u64) -> Result<DateTime<Utc>> {
+    let millis = i64::try_from(millis).wrap_err("timestamp exceeds signed range")?;
+    DateTime::from_timestamp_millis(millis).ok_or_else(|| eyre!("invalid timestamp: {millis}"))
+}
 
 pub fn connection_pool(url: &str) -> Result<Pool<ConnectionManager<PgConnection>>> {
     Pool::builder()
@@ -77,5 +85,16 @@ pub fn write_orderbooks(rows: &[OrderbookRow], conn: &mut PgConnection) -> Resul
         .values(rows)
         .execute(conn)
         .wrap_err("inserting order-book messages")?;
+    Ok(())
+}
+
+pub fn write_bbo(rows: &[BboRow], conn: &mut PgConnection) -> Result<()> {
+    if rows.is_empty() {
+        return Ok(());
+    }
+    insert_into(bbo_messages::table)
+        .values(rows)
+        .execute(conn)
+        .wrap_err("inserting best bid/offer messages")?;
     Ok(())
 }

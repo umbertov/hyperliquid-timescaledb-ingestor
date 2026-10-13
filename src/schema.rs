@@ -29,6 +29,19 @@ diesel::table! {
     }
 }
 
+diesel::table! {
+    bbo_messages (time, id) {
+        id -> Int8,
+        time -> Timestamptz,
+        symbol -> Int4,
+        bid_px -> Nullable<Numeric>,
+        bid_sz -> Nullable<Numeric>,
+        ask_px -> Nullable<Numeric>,
+        ask_sz -> Nullable<Numeric>,
+    }
+}
+
 diesel::joinable!(trades -> symbols (symbol));
 diesel::joinable!(orderbook_messages -> symbols (symbol));
-diesel::allow_tables_to_appear_in_same_query!(symbols, trades, orderbook_messages);
+diesel::joinable!(bbo_messages -> symbols (symbol));
+diesel::allow_tables_to_appear_in_same_query!(symbols, trades, orderbook_messages, bbo_messages);

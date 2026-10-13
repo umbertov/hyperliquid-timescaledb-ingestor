@@ -2104,6 +2104,7 @@ dependencies = [
  "diesel",
  "dotenv",
  "fallible-iterator",
+ "futures-util",
  "hyperliquid_rust_sdk",
  "mimalloc",
  "parquet",
@@ -2112,6 +2113,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "tokio-tungstenite",
  "tracing",
  "tracing-subscriber",
 ]
