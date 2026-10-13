@@ -23,7 +23,7 @@ Read `README.md` before you change the project. Maintain `README.md` and `CLAUDE
 - The Hyperliquid Rust SDK (`hyperliquid_rust_sdk` 0.6.0) has a closed `Subscription` enum with no `bbo` variant and no raw-message passthrough. Collect `bbo` over a separate raw WebSocket connection in `src/bbo.rs`, built on `tokio-tungstenite` (already in the dependency tree through the SDK).
 - Subscribe with `{"method":"subscribe","subscription":{"type":"bbo","coin":<coin>}}` for the same market list the `l2Book`/`trades` connection uses.
 - Send `{"method":"ping"}` before the connection's 60-second idle timeout and expect `{"channel":"pong"}` back.
-- Reconnect and resubscribe on every disconnect. Log each reconnect. Treat a message that does not match the documented `bbo` shape as a fatal error: log the raw message and stop, never skip it silently.
+- Reconnect and resubscribe on every disconnect. Log each reconnect. Treat 60 seconds without any message as a disconnect. Wait 1 second before the first reconnect, double the wait up to 60 seconds, and reset it after a connection that lasted 60 seconds. Treat a message that does not match the documented `bbo` shape as a fatal error: log the raw message and stop, never skip it silently.
 - Count each enabled `bbo` subscription against the same per-IP 1,000-subscription limit as `l2Book` and `trades`, even though it runs on its own connection. Fail at startup if the total would exceed that limit.
 
 ## Migrations

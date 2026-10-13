@@ -46,7 +46,7 @@ Compose passes `--paired-perp-spot` to the ingestor by default. Run `nix run .#c
 
 Pass `--collect-bbo` to also collect the `bbo` (best bid/offer) channel. This flag is off by default, so a deployment that does not pass it keeps today's behavior.
 
-The `l2Book` channel updates roughly once every 5.4 seconds per market. The `bbo` channel updates far more often on a liquid market. The Hyperliquid Rust SDK has no `bbo` subscription, so the ingestor opens a second WebSocket connection and speaks the Hyperliquid `bbo` protocol directly. This connection reconnects and resubscribes on every disconnect, and logs each reconnect. A message that does not match the documented `bbo` shape is a fatal error, not a skipped message.
+The `l2Book` channel updates roughly once every 5.4 seconds per market. The `bbo` channel updates far more often on a liquid market. The Hyperliquid Rust SDK has no `bbo` subscription, so the ingestor opens a second WebSocket connection and speaks the Hyperliquid `bbo` protocol directly. This connection reconnects and resubscribes on every disconnect, and logs each reconnect. A connection that sends nothing for 60 seconds, not even a pong to the 30-second ping, counts as dead and reconnects. The wait before a reconnect starts at 1 second and doubles up to 60 seconds. It goes back to 1 second after a connection that lasted at least 60 seconds. A message that does not match the documented `bbo` shape is a fatal error, not a skipped message.
 
 Each enabled `bbo` subscription counts toward the same 1,000-subscription-per-IP limit as `l2Book` and `trades`, even though it uses a separate connection. Startup fails if `--collect-bbo` would push the total subscription count over that limit.
 

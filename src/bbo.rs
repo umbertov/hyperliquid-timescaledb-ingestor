@@ -26,6 +26,14 @@ use tracing::{info, warn};
 
 const HYPERLIQUID_WS_URL: &str = "wss://api.hyperliquid.xyz/ws";
 const PING_INTERVAL: Duration = Duration::from_secs(30);
+/// A connection that sends nothing for this long, not even a pong to our ping,
+/// is dead. Without this deadline a silently dropped connection (a suspended
+/// host, a dead tunnel) would wait forever and collect nothing.
+const SILENCE_TIMEOUT: Duration = Duration::from_secs(60);
+const RECONNECT_DELAY_MIN: Duration = Duration::from_secs(1);
+const RECONNECT_DELAY_MAX: Duration = Duration::from_secs(60);
+/// A connection that lasted at least this long resets the reconnect delay.
+const HEALTHY_CONNECTION: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Deserialize, PartialEq)]
 pub struct WsLevel {
@@ -117,18 +125,36 @@ enum RunOnceError {
     Fatal(color_eyre::Report),
 }
 
+/// The wait before the next reconnect: doubles after a short-lived connection,
+/// resets after a healthy one, and never exceeds `RECONNECT_DELAY_MAX`.
+fn next_reconnect_delay(previous: Duration, connection_lasted: Duration) -> Duration {
+    if connection_lasted >= HEALTHY_CONNECTION {
+        RECONNECT_DELAY_MIN
+    } else {
+        (previous * 2).min(RECONNECT_DELAY_MAX)
+    }
+}
+
 /// Runs the `bbo` WebSocket collector for `markets` until a fatal error occurs,
-/// reconnecting and resubscribing on every disconnect.
+/// reconnecting and resubscribing on every disconnect, with a growing delay
+/// while the venue stays unreachable.
 pub async fn run(
     markets: Vec<String>,
     symbol_ids: HashMap<String, i32>,
     tx: mpsc::Sender<BboRow>,
 ) -> Result<()> {
+    let mut delay = RECONNECT_DELAY_MIN / 2;
     loop {
+        let started = tokio::time::Instant::now();
         match run_once(&markets, &symbol_ids, &tx).await {
             Ok(never) => match never {},
             Err(RunOnceError::Disconnected(error)) => {
-                warn!("bbo WebSocket disconnected, reconnecting: {error}");
+                delay = next_reconnect_delay(delay, started.elapsed());
+                warn!(
+                    delay_ms = delay.as_millis() as u64,
+                    "bbo WebSocket disconnected, reconnecting: {error}"
+                );
+                tokio::time::sleep(delay).await;
             }
             Err(RunOnceError::Fatal(error)) => return Err(error),
         }
@@ -158,9 +184,16 @@ async fn run_once(
 
     let mut ping_ticker = tokio::time::interval(PING_INTERVAL);
     ping_ticker.tick().await;
+    let mut silence_deadline = tokio::time::Instant::now() + SILENCE_TIMEOUT;
 
     loop {
         tokio::select! {
+            _ = tokio::time::sleep_until(silence_deadline) => {
+                return Err(RunOnceError::Disconnected(eyre!(
+                    "no bbo WebSocket message for {} s",
+                    SILENCE_TIMEOUT.as_secs()
+                )));
+            }
             _ = ping_ticker.tick() => {
                 sink.send(WsMessage::Text(serde_json::json!({"method": "ping"}).to_string()))
                     .await
@@ -170,6 +203,7 @@ async fn run_once(
                 let message = message
                     .ok_or_else(|| RunOnceError::Disconnected(eyre!("bbo WebSocket stream closed")))?
                     .map_err(|error| RunOnceError::Disconnected(eyre!(error)))?;
+                silence_deadline = tokio::time::Instant::now() + SILENCE_TIMEOUT;
                 match message {
                     WsMessage::Text(text) => {
                         let data = parse_bbo_envelope(&text).map_err(RunOnceError::Fatal)?;
@@ -257,6 +291,22 @@ mod tests {
 
         let pong = r#"{"channel":"pong"}"#;
         assert!(parse_bbo_envelope(pong).expect("message parses").is_none());
+    }
+
+    #[test]
+    fn reconnect_delay_grows_to_the_cap_and_resets_after_a_healthy_connection() {
+        let short = Duration::from_secs(1);
+        let mut delay = RECONNECT_DELAY_MIN / 2;
+        let mut seen = Vec::new();
+        for _ in 0..9 {
+            delay = next_reconnect_delay(delay, short);
+            seen.push(delay.as_secs());
+        }
+        assert_eq!(seen, vec![1, 2, 4, 8, 16, 32, 60, 60, 60]);
+        assert_eq!(
+            next_reconnect_delay(delay, HEALTHY_CONNECTION),
+            RECONNECT_DELAY_MIN
+        );
     }
 
     #[test]
