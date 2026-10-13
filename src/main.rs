@@ -1,15 +1,16 @@
 use bigdecimal::BigDecimal;
-use chrono::{DateTime, Utc};
 use clap::{Parser, Subcommand};
 use color_eyre::eyre::{eyre, Result, WrapErr};
 use diesel::{Connection, PgConnection};
 use hyperliquid_rust_sdk::{BaseUrl, BookLevel, InfoClient, Message, Subscription};
-use hyperliquid_timescaledb_ingestor::models::{OrderbookRow, TradeRow};
+use hyperliquid_timescaledb_ingestor::millis_to_datetime;
+use hyperliquid_timescaledb_ingestor::models::{BboRow, OrderbookRow, TradeRow};
 use mimalloc::MiMalloc;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::Duration;
 use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 use tracing::{error, info};
 
 #[global_allocator]
@@ -19,6 +20,7 @@ const BATCH_CAPACITY: usize = 128;
 const FLUSH_INTERVAL: Duration = Duration::from_secs(1);
 const SUBSCRIPTIONS_PER_MARKET: usize = 2;
 const MAX_MARKETS: usize = 500;
+const SUBSCRIPTION_LIMIT: usize = MAX_MARKETS * SUBSCRIPTIONS_PER_MARKET;
 
 #[derive(Parser)]
 #[command(name = "hyperliquid-timescaledb-ingestor")]
@@ -28,6 +30,11 @@ struct Args {
         help = "Collect only symbols with both spot and perpetual markets"
     )]
     paired_perp_spot: bool,
+    #[arg(
+        long,
+        help = "Also collect the bbo (best bid/offer) channel over a separate WebSocket connection; off by default"
+    )]
+    collect_bbo: bool,
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -47,6 +54,7 @@ enum Command {
 enum WriteMsg {
     Trade(TradeRow),
     Orderbook(OrderbookRow),
+    Bbo(BboRow),
 }
 
 #[tokio::main]
@@ -60,6 +68,9 @@ async fn main() -> Result<()> {
     let args = Args::parse();
     if args.paired_perp_spot && args.command.is_some() {
         return Err(eyre!("--paired-perp-spot applies only to live collection"));
+    }
+    if args.collect_bbo && args.command.is_some() {
+        return Err(eyre!("--collect-bbo applies only to live collection"));
     }
     if let Some(Command::Export {
         output_dir,
@@ -124,8 +135,17 @@ async fn main() -> Result<()> {
         };
         spot_markets.push((coin, (*base).to_string()));
     }
+    // `bbo` is collected over a separate WebSocket connection, but Hyperliquid's
+    // 1,000-subscription limit is per IP, not per connection, so an enabled `bbo`
+    // subscription per market must still count against it here.
+    let subscriptions_per_market = SUBSCRIPTIONS_PER_MARKET + usize::from(args.collect_bbo);
     let markets = if args.paired_perp_spot {
-        select_paired_markets(&perpetual_markets, &spot_markets, MAX_MARKETS)?
+        select_paired_markets(
+            &perpetual_markets,
+            &spot_markets,
+            subscriptions_per_market,
+            SUBSCRIPTION_LIMIT,
+        )?
     } else {
         let markets = perpetual_markets
             .iter()
@@ -133,12 +153,12 @@ async fn main() -> Result<()> {
             .map(|name| (name, "perp"))
             .chain(spot_markets.iter().map(|(name, _)| (name.clone(), "spot")))
             .collect::<Vec<_>>();
-        if markets.len() > MAX_MARKETS {
+        if markets.len() * subscriptions_per_market > SUBSCRIPTION_LIMIT {
             return Err(eyre!(
                 "all {} markets need {} subscriptions, above the per-IP limit of {}; run with --paired-perp-spot",
                 markets.len(),
-                markets.len() * SUBSCRIPTIONS_PER_MARKET,
-                MAX_MARKETS * SUBSCRIPTIONS_PER_MARKET
+                markets.len() * subscriptions_per_market,
+                SUBSCRIPTION_LIMIT
             ));
         }
         markets
@@ -154,6 +174,25 @@ async fn main() -> Result<()> {
     let (tx, rx) = mpsc::channel(BATCH_CAPACITY * 4);
     tokio::spawn(writer_task(rx, pool));
     let (ws_tx, mut ws_rx) = mpsc::unbounded_channel();
+
+    let bbo_task = if args.collect_bbo {
+        let (bbo_tx, mut bbo_rx) = mpsc::channel(BATCH_CAPACITY * 4);
+        let forward_tx = tx.clone();
+        tokio::spawn(async move {
+            while let Some(row) = bbo_rx.recv().await {
+                if forward_tx.send(WriteMsg::Bbo(row)).await.is_err() {
+                    return;
+                }
+            }
+        });
+        Some(tokio::spawn(hyperliquid_timescaledb_ingestor::bbo::run(
+            market_names.clone(),
+            symbol_ids.clone(),
+            bbo_tx,
+        )))
+    } else {
+        None
+    };
 
     let mut websocket_client = InfoClient::with_reconnect(None, Some(BaseUrl::Mainnet))
         .await
@@ -184,12 +223,19 @@ async fn main() -> Result<()> {
         "subscribed to trades and order books"
     );
 
+    let mut bbo_task = bbo_task;
     loop {
-        match ws_rx
-            .recv()
-            .await
-            .ok_or_else(|| eyre!("Hyperliquid SDK stream closed"))?
-        {
+        let message = tokio::select! {
+            message = ws_rx.recv() => message.ok_or_else(|| eyre!("Hyperliquid SDK stream closed"))?,
+            result = poll_bbo_task(&mut bbo_task) => {
+                return match result {
+                    Ok(Ok(())) => Err(eyre!("bbo collector stopped unexpectedly")),
+                    Ok(Err(error)) => Err(error.wrap_err("bbo collector failed")),
+                    Err(join_error) => Err(eyre!(join_error).wrap_err("bbo collector task panicked")),
+                };
+            }
+        };
+        match message {
             Message::Trades(message) => {
                 for trade in message.data {
                     let symbol = *symbol_ids
@@ -258,10 +304,24 @@ async fn main() -> Result<()> {
     }
 }
 
+/// Awaits the optional bbo collector task without consuming it, so a loop can poll it
+/// alongside other work every iteration until it actually finishes. When collection is
+/// disabled (`handle` is `None`) this never resolves, so the owning `select!` branch is
+/// effectively absent.
+async fn poll_bbo_task(
+    handle: &mut Option<JoinHandle<Result<()>>>,
+) -> std::result::Result<Result<()>, tokio::task::JoinError> {
+    match handle.as_mut() {
+        Some(handle) => handle.await,
+        None => std::future::pending().await,
+    }
+}
+
 fn select_paired_markets(
     perpetual_markets: &[String],
     spot_markets: &[(String, String)],
-    limit: usize,
+    subscriptions_per_market: usize,
+    subscription_limit: usize,
 ) -> Result<Vec<(String, &'static str)>> {
     let spot_bases: HashSet<&str> = spot_markets
         .iter()
@@ -278,7 +338,7 @@ fn select_paired_markets(
     }
     let paired_bases: HashSet<&str> = paired_perpetuals.iter().map(|name| name.as_str()).collect();
     let mut selected = Vec::with_capacity(paired_perpetuals.len() * 2);
-    let mut selected_names = HashSet::with_capacity(limit);
+    let mut selected_names = HashSet::new();
 
     for name in &paired_perpetuals {
         push_market(&mut selected, &mut selected_names, (*name).clone(), "perp");
@@ -288,12 +348,12 @@ fn select_paired_markets(
             push_market(&mut selected, &mut selected_names, name.clone(), "spot");
         }
     }
-    if selected.len() > limit {
+    if selected.len() * subscriptions_per_market > subscription_limit {
         return Err(eyre!(
             "{} paired spot and perpetual markets need {} subscriptions, above the limit of {}",
             selected.len(),
-            selected.len() * SUBSCRIPTIONS_PER_MARKET,
-            limit * SUBSCRIPTIONS_PER_MARKET
+            selected.len() * subscriptions_per_market,
+            subscription_limit
         ));
     }
     let paired_perpetual_count = paired_perpetuals.len();
@@ -304,7 +364,7 @@ fn select_paired_markets(
         paired_perpetual_count,
         perpetual_count,
         spot_count,
-        subscription_count = selected.len() * SUBSCRIPTIONS_PER_MARKET,
+        subscription_count = selected.len() * subscriptions_per_market,
         "selected markets with both spot and perpetual data"
     );
     Ok(selected)
@@ -369,11 +429,12 @@ async fn flush(
         return;
     }
     let drained = std::mem::take(batch);
-    let (mut trades, mut orderbooks) = (Vec::new(), Vec::new());
+    let (mut trades, mut orderbooks, mut bbos) = (Vec::new(), Vec::new(), Vec::new());
     for message in drained {
         match message {
             WriteMsg::Trade(row) => trades.push(row),
             WriteMsg::Orderbook(row) => orderbooks.push(row),
+            WriteMsg::Bbo(row) => bbos.push(row),
         }
     }
     let pool = pool.clone();
@@ -384,6 +445,7 @@ async fn flush(
         conn.transaction::<_, color_eyre::Report, _>(|conn| {
             hyperliquid_timescaledb_ingestor::write_trades(&trades, conn)?;
             hyperliquid_timescaledb_ingestor::write_orderbooks(&orderbooks, conn)?;
+            hyperliquid_timescaledb_ingestor::write_bbo(&bbos, conn)?;
             Ok(())
         })
     })
@@ -399,9 +461,4 @@ async fn flush(
             std::process::exit(1);
         }
     }
-}
-
-fn millis_to_datetime(millis: u64) -> Result<DateTime<Utc>> {
-    let millis = i64::try_from(millis).wrap_err("timestamp exceeds signed range")?;
-    DateTime::from_timestamp_millis(millis).ok_or_else(|| eyre!("invalid timestamp: {millis}"))
 }
