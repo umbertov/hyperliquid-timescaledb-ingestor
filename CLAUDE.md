@@ -5,8 +5,9 @@ Read `README.md` before you change the project. Maintain `README.md` and `CLAUDE
 ## Data model
 
 - Store exchange market names in `symbols`.
-- Store trades and order-book messages in TimescaleDB hypertables.
+- Store trades, order-book messages, and bbo (best bid/offer) messages in TimescaleDB hypertables.
 - Store bid and ask levels as JSONB arrays.
+- Store bbo bid and ask price and size as nullable `NUMERIC` columns, since either side of a bbo update can be `null`.
 - Use exchange trade IDs and timestamps to deduplicate trade events.
 - Declare trade prices and sizes as `NUMERIC`.
 - Keep hypertable options minimal and disable columnstore storage.
@@ -15,6 +16,15 @@ Read `README.md` before you change the project. Maintain `README.md` and `CLAUDE
 - Export trades and order-book messages as Parquet in bounded batches.
 - Keep exported prices and sizes as decimal text to preserve exact values.
 - Fail if an export output file already exists.
+
+## bbo collection
+
+- Collect the `bbo` channel only when `--collect-bbo` is set. The default is off, so the flag changes no existing deployment.
+- The Hyperliquid Rust SDK (`hyperliquid_rust_sdk` 0.6.0) has a closed `Subscription` enum with no `bbo` variant and no raw-message passthrough. Collect `bbo` over a separate raw WebSocket connection in `src/bbo.rs`, built on `tokio-tungstenite` (already in the dependency tree through the SDK).
+- Subscribe with `{"method":"subscribe","subscription":{"type":"bbo","coin":<coin>}}` for the same market list the `l2Book`/`trades` connection uses.
+- Send `{"method":"ping"}` before the connection's 60-second idle timeout and expect `{"channel":"pong"}` back.
+- Reconnect and resubscribe on every disconnect. Log each reconnect. Treat a message that does not match the documented `bbo` shape as a fatal error: log the raw message and stop, never skip it silently.
+- Count each enabled `bbo` subscription against the same per-IP 1,000-subscription limit as `l2Book` and `trades`, even though it runs on its own connection. Fail at startup if the total would exceed that limit.
 
 ## Migrations
 
