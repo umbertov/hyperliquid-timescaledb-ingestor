@@ -6,7 +6,7 @@
 # the live API.
 #
 # Selection criterion, used for the entries below:
-# for each active `xyz:*` perp whose ticker T has exactly one candidate family, prefer the spot token named `<T>X` (the xStock wrapped token, e.g. NVDAX) quoted in USDC, because xStocks are 1:1 backed by the underlying share by their issuer and are the most widely traded tokenized-stock family on Hyperliquid spot; if no `<T>X`/USDC pair exists, leave the perp unmapped.
+# For each active `xyz:T` perp, map it to the spot pair `<T>X/USDC` (the xStock wrapped token) when that pair exists; otherwise leave the perp unmapped. Rationale: xStock tokens are issued 1:1 against the underlying share. Other tokenized families for the same ticker (for example NVDA by Wagyu.xyz and EQNVDA by EQX) are excluded by this rule, not by a judgment of their quality.
 #
 # Each entry has these keys:
 # - perp: the builder-dex perp name, such as "xyz:NVDA".

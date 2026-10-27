@@ -77,7 +77,7 @@ Compose reads the value from `PERP_DEXES`. Compose fails if `PERP_DEXES` is not 
 
 Pass `--xyz-spot-map` with the path to a TOML file. The file maps `xyz` perps to spot pairs. The option is required when `--perp-dexes` includes `xyz`. Startup fails when the option is set without `xyz`. The option has no default path.
 
-The sample file is `config/xyz-spot-map.toml`. Its header states the selection criterion. Each `[[pairs]]` entry has four keys: `perp`, `spot`, `spot_token` and `rationale`. Unknown keys fail startup.
+The sample file is `config/xyz-spot-map.toml`. Its header states the selection criterion. For each active `xyz:T` perp, the criterion maps the spot pair `<T>X/USDC` (the xStock wrapped token) when that pair exists. Otherwise the perp stays unmapped. Other tokenized families for the same ticker, such as `NVDA` and `EQNVDA`, are excluded by this rule. The pairing comes from this maintained file, not from an API link. Each `[[pairs]]` entry has four keys: `perp`, `spot`, `spot_token` and `rationale`. Unknown keys fail startup.
 
 At startup, the ingestor checks each entry against the live API. The perp must be an active `xyz` market. The spot pair must exist in `spotMeta`, and its base token must equal `spot_token`. A mismatch fails startup.
 
