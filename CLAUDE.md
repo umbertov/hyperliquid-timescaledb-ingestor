@@ -34,8 +34,13 @@ Read `README.md` before you change the project. Maintain `README.md` and `CLAUDE
 - Fail at startup if Hyperliquid does not list a requested dex, or if a market name lacks the `<dex>:` prefix.
 - Store builder-dex market names as Hyperliquid names them, such as `xyz:NVDA`. Use the same name for `trades`, `l2Book`, `bbo` and `fundingHistory`.
 - Skip delisted builder-dex markets.
-- Do not pair a builder-dex perp with a spot market by name. No info API field links them, and several spot tokens share one ticker. Collect the perp alone and log that no spot counterpart is verified.
-- Add builder-dex perps after the `--paired-perp-spot` selection. Count them in the subscription limit.
+- Do not pair a builder-dex perp with a spot market by name. No info API field links them, and several spot tokens share one ticker. Collect a perp without a mapping entry alone and log that no spot counterpart is verified.
+- Take builder-dex spot counterparts only from `config/xyz-spot-map.toml`, passed with `--xyz-spot-map`. Keep its header selection criterion. Do not add a default path.
+- Require `--xyz-spot-map` when `--perp-dexes` includes `xyz`. Reject it without `xyz`.
+- Check each mapped perp against the live `xyz` meta and each mapped spot pair against `spotMeta`. Fail at startup on a mismatch, including a spot base token that differs from `spot_token`.
+- Subscribe mapped spot pairs to trades, `l2Book` and, with `--collect-bbo`, bbo. Store them with their `@index` names.
+- Store the mapping in `perp_spot_pairs` with source `mapping-file`. Make the table match the file at each start.
+- Add builder-dex perps and mapped spot pairs after the `--paired-perp-spot` selection. Count them in the subscription limit.
 
 ## bbo collection
 
@@ -56,6 +61,7 @@ Read `README.md` before you change the project. Maintain `README.md` and `CLAUDE
 
 - Copy `.env.example` to `.env` before deployment.
 - Apply migrations before you start the ingestor.
+- Keep `XYZ_SPOT_MAP` set in Compose. Compose requires `xyz` in `PERP_DEXES`.
 - Use `nix run .#compose -- down` to stop the Compose service.
 - Build the Compose ingestor image from `Dockerfile` with `docker compose up --build`.
 - Use host networking to connect to a database published on `127.0.0.1:5433` on the Docker host.
