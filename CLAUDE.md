@@ -61,7 +61,7 @@ Read `README.md` before you change the project. Maintain `README.md` and `CLAUDE
 
 - Copy `.env.example` to `.env` before deployment.
 - Apply migrations before you start the ingestor.
-- Keep `XYZ_SPOT_MAP` set in Compose. Compose requires `xyz` in `PERP_DEXES`.
+- Set `XYZ_SPOT_MAP_FILE` in `.env`. Compose sets the container variable `XYZ_SPOT_MAP` only when `PERP_DEXES` is non-empty.
 - Use `nix run .#compose -- down` to stop the Compose service.
 - Build the Compose ingestor image from `Dockerfile` with `docker compose up --build`.
 - Use host networking to connect to a database published on `127.0.0.1:5433` on the Docker host.

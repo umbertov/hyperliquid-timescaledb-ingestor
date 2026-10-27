@@ -71,7 +71,7 @@ The info API has no field that links a builder-dex perp to a spot token. Several
 
 Builder-dex perps count toward the 1,000-subscription limit. With `--paired-perp-spot`, the ingestor adds them after the paired selection. Startup fails if the total exceeds the limit.
 
-Compose reads the value from `PERP_DEXES`. Compose fails if `PERP_DEXES` is not set. Compose always passes `XYZ_SPOT_MAP`, so `PERP_DEXES` must include `xyz`. An empty `PERP_DEXES=` fails startup.
+Compose reads the value from `PERP_DEXES`. Compose fails if `PERP_DEXES` is not set. An empty `PERP_DEXES=` selects no builder dex. Compose then passes no mapping file to the ingestor.
 
 ### xyz spot mapping
 
@@ -83,7 +83,7 @@ At startup, the ingestor checks each entry against the live API. The perp must b
 
 The ingestor subscribes to trades and order books for each mapped spot pair. With `--collect-bbo`, it also subscribes to bbo. Mapped spot pairs count toward the subscription limit. The ingestor stores each pair in the `perp_spot_pairs` table with the source `mapping-file`. At each start, the table matches the file. Rows for perps that the file no longer lists are deleted.
 
-Compose reads the path from `XYZ_SPOT_MAP`. It mounts the file read-only at `/etc/hyperliquid/xyz-spot-map.toml`. Compose fails if `XYZ_SPOT_MAP` is not set.
+Compose reads the host path from `XYZ_SPOT_MAP_FILE` and mounts that file read-only at `/etc/hyperliquid/xyz-spot-map.toml`. Compose fails if `XYZ_SPOT_MAP_FILE` is not set. It sets the `XYZ_SPOT_MAP` variable inside the container only when `PERP_DEXES` is non-empty. The ingestor reads that variable and rejects it when `xyz` is absent.
 
 ### bbo collection
 
@@ -106,8 +106,8 @@ Do these steps in this order. The ingestor needs the `funding_rates` and `perp_s
 3. Add these values to `.env`:
    - `FUNDING_POLL_INTERVAL_SECS`, the seconds between polling passes, for example `3600`. Funding settles once each hour.
    - `FUNDING_BACKFILL_START`, the first settlement time to load for a market with no stored funding.
-   - `PERP_DEXES`, for example `xyz`. The list must include `xyz`.
-   - `XYZ_SPOT_MAP`, the path to the mapping file, for example `./config/xyz-spot-map.toml`.
+   - `PERP_DEXES`, for example `xyz`, or empty for no builder dex.
+   - `XYZ_SPOT_MAP_FILE`, the host path to the mapping file, for example `./config/xyz-spot-map.toml`.
 4. Start the service with `nix run .#up`.
 5. Read the logs. Make sure that the subscription budget line appears. Make sure that `synced builder-dex perp to spot pairs from the mapping file` appears with the expected `pair_count`. Make sure that `polled funding history` appears after the backfill.
 

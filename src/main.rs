@@ -59,7 +59,7 @@ struct Args {
     perp_dexes: Option<String>,
     #[arg(
         long,
-        help = "TOML file that maps xyz builder-dex perps to spot pairs; required when --perp-dexes includes xyz"
+        help = "TOML file that maps xyz builder-dex perps to spot pairs; required when --perp-dexes includes xyz. The XYZ_SPOT_MAP variable sets it when the flag is absent; an empty value counts as unset"
     )]
     xyz_spot_map: Option<PathBuf>,
     #[command(subcommand)]
@@ -102,7 +102,7 @@ async fn main() -> Result<()> {
     if args.perp_dexes.is_some() && args.command.is_some() {
         return Err(eyre!("--perp-dexes applies only to live collection"));
     }
-    if args.xyz_spot_map.is_some() && args.command.is_some() {
+    if xyz_spot_map(&args).is_some() && args.command.is_some() {
         return Err(eyre!("--xyz-spot-map applies only to live collection"));
     }
     if (args.funding_poll_interval_secs.is_some() || args.funding_backfill_start.is_some())
@@ -138,9 +138,9 @@ async fn main() -> Result<()> {
     )?;
     let xyz_spot_pairs: Vec<SpotPair> = match (
         perp_dexes.iter().any(|dex| dex == XYZ_DEX),
-        args.xyz_spot_map.as_deref(),
+        xyz_spot_map(&args),
     ) {
-        (true, Some(path)) => spot_map::load(path)?,
+        (true, Some(path)) => spot_map::load(&path)?,
         (true, None) => {
             return Err(eyre!(
                 "--xyz-spot-map is required when --perp-dexes includes {XYZ_DEX}"
@@ -486,6 +486,16 @@ fn check_subscription_budget(
         "WebSocket subscription budget fits"
     );
     Ok(())
+}
+
+/// Returns the mapping-file path from `--xyz-spot-map`, or from `XYZ_SPOT_MAP` when the
+/// flag is absent. An empty value counts as unset, so Compose can pass the variable
+/// when `PERP_DEXES` is empty.
+fn xyz_spot_map(args: &Args) -> Option<PathBuf> {
+    args.xyz_spot_map
+        .clone()
+        .or_else(|| std::env::var_os("XYZ_SPOT_MAP").map(PathBuf::from))
+        .filter(|path| !path.as_os_str().is_empty())
 }
 
 fn symbol_id(symbol_ids: &HashMap<String, i32>, name: &str) -> Result<i32> {
