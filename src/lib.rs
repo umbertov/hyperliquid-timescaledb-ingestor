@@ -1,16 +1,17 @@
 pub mod bbo;
 pub mod export;
+pub mod funding;
 pub mod models;
 pub mod schema;
 
 use chrono::{DateTime, Utc};
 use color_eyre::eyre::{eyre, Result, WrapErr};
-use diesel::dsl::insert_into;
+use diesel::dsl::{insert_into, max};
 use diesel::pg::PgConnection;
 use diesel::prelude::*;
 use diesel::r2d2::{ConnectionManager, Pool};
-use models::{BboRow, NewSymbol, OrderbookRow, Symbol, TradeRow};
-use schema::{bbo_messages, orderbook_messages, symbols, trades};
+use models::{BboRow, FundingRateRow, NewSymbol, OrderbookRow, Symbol, TradeRow};
+use schema::{bbo_messages, funding_rates, orderbook_messages, symbols, trades};
 use std::collections::HashMap;
 
 /// Converts a Hyperliquid millisecond timestamp into a UTC `DateTime`.
@@ -96,5 +97,25 @@ pub fn write_bbo(rows: &[BboRow], conn: &mut PgConnection) -> Result<()> {
         .values(rows)
         .execute(conn)
         .wrap_err("inserting best bid/offer messages")?;
+    Ok(())
+}
+
+pub fn newest_funding_time(conn: &mut PgConnection, symbol: i32) -> Result<Option<DateTime<Utc>>> {
+    funding_rates::table
+        .filter(funding_rates::symbol.eq(symbol))
+        .select(max(funding_rates::time))
+        .first(conn)
+        .wrap_err("loading newest funding settlement")
+}
+
+pub fn write_funding_rates(rows: &[FundingRateRow], conn: &mut PgConnection) -> Result<()> {
+    if rows.is_empty() {
+        return Ok(());
+    }
+    insert_into(funding_rates::table)
+        .values(rows)
+        .on_conflict_do_nothing()
+        .execute(conn)
+        .wrap_err("inserting funding rates")?;
     Ok(())
 }

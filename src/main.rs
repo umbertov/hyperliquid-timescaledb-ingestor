@@ -1,8 +1,10 @@
 use bigdecimal::BigDecimal;
+use chrono::{DateTime, Utc};
 use clap::{Parser, Subcommand};
 use color_eyre::eyre::{eyre, Result, WrapErr};
 use diesel::{Connection, PgConnection};
 use hyperliquid_rust_sdk::{BaseUrl, BookLevel, InfoClient, Message, Subscription};
+use hyperliquid_timescaledb_ingestor::funding::{self, PerpMarket};
 use hyperliquid_timescaledb_ingestor::millis_to_datetime;
 use hyperliquid_timescaledb_ingestor::models::{BboRow, OrderbookRow, TradeRow};
 use mimalloc::MiMalloc;
@@ -35,6 +37,19 @@ struct Args {
         help = "Also collect the bbo (best bid/offer) channel over a separate WebSocket connection; off by default"
     )]
     collect_bbo: bool,
+    #[arg(
+        long,
+        required_unless_present = "command",
+        value_parser = clap::value_parser!(u64).range(1..),
+        help = "Seconds to wait after each full pass of funding-rate polling"
+    )]
+    funding_poll_interval_secs: Option<u64>,
+    #[arg(
+        long,
+        required_unless_present = "command",
+        help = "RFC 3339 time, such as 2026-10-01T00:00:00Z, to backfill funding from when a market has no stored settlement"
+    )]
+    funding_backfill_start: Option<String>,
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -71,6 +86,13 @@ async fn main() -> Result<()> {
     }
     if args.collect_bbo && args.command.is_some() {
         return Err(eyre!("--collect-bbo applies only to live collection"));
+    }
+    if (args.funding_poll_interval_secs.is_some() || args.funding_backfill_start.is_some())
+        && args.command.is_some()
+    {
+        return Err(eyre!(
+            "--funding-poll-interval-secs and --funding-backfill-start apply only to live collection"
+        ));
     }
     if let Some(Command::Export {
         output_dir,
@@ -171,6 +193,37 @@ async fn main() -> Result<()> {
     );
 
     let pool = hyperliquid_timescaledb_ingestor::connection_pool(&database_url)?;
+    let funding_poll_interval =
+        Duration::from_secs(args.funding_poll_interval_secs.ok_or_else(|| {
+            eyre!("--funding-poll-interval-secs is required for live collection")
+        })?);
+    let funding_backfill_start = DateTime::parse_from_rfc3339(
+        args.funding_backfill_start
+            .as_deref()
+            .ok_or_else(|| eyre!("--funding-backfill-start is required for live collection"))?,
+    )
+    .wrap_err("parsing --funding-backfill-start")?
+    .with_timezone(&Utc);
+    let funding_markets = markets
+        .iter()
+        .filter(|(_, kind)| *kind == "perp")
+        .map(|(name, _)| -> Result<PerpMarket> {
+            let symbol = *symbol_ids
+                .get(name)
+                .ok_or_else(|| eyre!("perpetual market {name} has no symbol ID"))?;
+            Ok(PerpMarket {
+                name: name.clone(),
+                symbol,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let mut funding_task = tokio::spawn(funding::run(
+        funding_markets,
+        info_client,
+        pool.clone(),
+        funding_poll_interval,
+        funding_backfill_start,
+    ));
     let (tx, rx) = mpsc::channel(BATCH_CAPACITY * 4);
     tokio::spawn(writer_task(rx, pool));
     let (ws_tx, mut ws_rx) = mpsc::unbounded_channel();
@@ -232,6 +285,13 @@ async fn main() -> Result<()> {
                     Ok(Ok(())) => Err(eyre!("bbo collector stopped unexpectedly")),
                     Ok(Err(error)) => Err(error.wrap_err("bbo collector failed")),
                     Err(join_error) => Err(eyre!(join_error).wrap_err("bbo collector task panicked")),
+                };
+            }
+            result = poll_task(&mut funding_task) => {
+                return match result {
+                    Ok(Ok(())) => Err(eyre!("funding poller stopped unexpectedly")),
+                    Ok(Err(error)) => Err(error.wrap_err("funding poller failed")),
+                    Err(join_error) => Err(eyre!(join_error).wrap_err("funding poller task panicked")),
                 };
             }
         };
@@ -315,6 +375,12 @@ async fn poll_bbo_task(
         Some(handle) => handle.await,
         None => std::future::pending().await,
     }
+}
+
+async fn poll_task(
+    handle: &mut JoinHandle<Result<()>>,
+) -> std::result::Result<Result<()>, tokio::task::JoinError> {
+    handle.await
 }
 
 fn select_paired_markets(
