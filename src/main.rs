@@ -39,14 +39,12 @@ struct Args {
     collect_bbo: bool,
     #[arg(
         long,
-        required_unless_present = "command",
         value_parser = clap::value_parser!(u64).range(1..),
         help = "Seconds to wait after each full pass of funding-rate polling"
     )]
     funding_poll_interval_secs: Option<u64>,
     #[arg(
         long,
-        required_unless_present = "command",
         help = "RFC 3339 time, such as 2026-10-01T00:00:00Z, to backfill funding from when a market has no stored settlement"
     )]
     funding_backfill_start: Option<String>,
@@ -113,6 +111,17 @@ async fn main() -> Result<()> {
         .wrap_err("export task failed")?;
     }
 
+    let funding_poll_interval =
+        Duration::from_secs(args.funding_poll_interval_secs.ok_or_else(|| {
+            eyre!("--funding-poll-interval-secs is required for live collection")
+        })?);
+    let funding_backfill_start = DateTime::parse_from_rfc3339(
+        args.funding_backfill_start
+            .as_deref()
+            .ok_or_else(|| eyre!("--funding-backfill-start is required for live collection"))?,
+    )
+    .wrap_err("parsing --funding-backfill-start")?
+    .with_timezone(&Utc);
     let database_url = std::env::var("DATABASE_URL").wrap_err("DATABASE_URL must be set")?;
     let mut conn = PgConnection::establish(&database_url).wrap_err("connecting to PostgreSQL")?;
     let info_client = InfoClient::with_reconnect(None, Some(BaseUrl::Mainnet))
@@ -193,17 +202,6 @@ async fn main() -> Result<()> {
     );
 
     let pool = hyperliquid_timescaledb_ingestor::connection_pool(&database_url)?;
-    let funding_poll_interval =
-        Duration::from_secs(args.funding_poll_interval_secs.ok_or_else(|| {
-            eyre!("--funding-poll-interval-secs is required for live collection")
-        })?);
-    let funding_backfill_start = DateTime::parse_from_rfc3339(
-        args.funding_backfill_start
-            .as_deref()
-            .ok_or_else(|| eyre!("--funding-backfill-start is required for live collection"))?,
-    )
-    .wrap_err("parsing --funding-backfill-start")?
-    .with_timezone(&Utc);
     let funding_markets = markets
         .iter()
         .filter(|(_, kind)| *kind == "perp")
@@ -526,5 +524,16 @@ async fn flush(
             error!("database writer task failed: {error}");
             std::process::exit(1);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    #[test]
+    fn cli_definition_is_valid() {
+        Args::command().debug_assert();
     }
 }
