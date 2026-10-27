@@ -1,4 +1,4 @@
-use crate::schema::{bbo_messages, orderbook_messages, symbols, trades};
+use crate::schema::{bbo_messages, funding_rates, orderbook_messages, symbols, trades};
 use bigdecimal::BigDecimal;
 use chrono::{DateTime, Utc};
 use diesel::prelude::*;
@@ -49,4 +49,13 @@ pub struct BboRow {
     pub bid_sz: Option<BigDecimal>,
     pub ask_px: Option<BigDecimal>,
     pub ask_sz: Option<BigDecimal>,
+}
+
+#[derive(Insertable)]
+#[diesel(table_name = funding_rates)]
+pub struct FundingRateRow {
+    pub time: DateTime<Utc>,
+    pub symbol: i32,
+    pub funding_rate: BigDecimal,
+    pub premium: BigDecimal,
 }
