@@ -42,6 +42,25 @@ nix run .#default -- --paired-perp-spot
 
 Compose passes `--paired-perp-spot` to the ingestor by default. Run `nix run .#compose -- down` to stop the service.
 
+### funding collection
+
+The ingestor polls the `fundingHistory` info request for each collected perpetual market. The `funding_rates` table stores the settled funding rate, its settlement time, and the premium. Each market and settlement time has one row.
+
+The poller starts one millisecond after the newest stored settlement. A market with no stored settlement starts at the backfill start. The poller pages forward until the API returns no rows. It sends one request per second, which stays within the info endpoint weight limit. Duplicate rows do nothing on insert.
+
+Set both options. The ingestor fails at startup if either option is missing:
+
+- `--funding-poll-interval-secs` sets the seconds to wait after each full pass. It must be at least 1.
+- `--funding-backfill-start` sets an RFC 3339 (internet date and time format) time, such as `2026-10-01T00:00:00Z`.
+
+Compose reads both values from `FUNDING_POLL_INTERVAL_SECS` and `FUNDING_BACKFILL_START`. Set them in `.env` before you start the service.
+
+```sh
+nix run .#default -- --paired-perp-spot --funding-poll-interval-secs 3600 --funding-backfill-start 2026-10-01T00:00:00Z
+```
+
+The poller collects only the perpetual markets that the run selects. It does not collect predicted funding rates.
+
 ### bbo collection
 
 Pass `--collect-bbo` to also collect the `bbo` (best bid/offer) channel. This flag is off by default, so a deployment that does not pass it keeps today's behavior.

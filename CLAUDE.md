@@ -16,6 +16,16 @@ Read `README.md` before you change the project. Maintain `README.md` and `CLAUDE
 - Export trades and order-book messages as Parquet in bounded batches.
 - Keep exported prices and sizes as decimal text to preserve exact values.
 - Fail if an export output file already exists.
+- Store settled funding rates in the `funding_rates` hypertable, one row per symbol and settlement time. Store `fundingRate` and `premium` as `NUMERIC`.
+- Deduplicate funding rates on (time, symbol). Insert them with `ON CONFLICT DO NOTHING`.
+- Never write a predicted funding rate into `funding_rates`.
+
+## Funding collection
+
+- Poll `fundingHistory` one request at a time, with at least one second between requests. The info endpoint of the REST (HTTP request) API allows 1,200 weight per minute per IP.
+- Start each market at one millisecond after its newest stored settlement, or at `--funding-backfill-start` when none is stored.
+- Require `--funding-poll-interval-secs` and `--funding-backfill-start` for live collection. Do not add defaults.
+- Fail on a response row for another coin, a row before the requested start, or a decimal field that is not an exact number.
 
 ## bbo collection
 

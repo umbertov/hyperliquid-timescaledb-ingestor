@@ -5,7 +5,10 @@ services:
       context: .
       dockerfile: Dockerfile
     pull_policy: build
-    command: ["--paired-perp-spot"]
+    command:
+      - "--paired-perp-spot"
+      - "--funding-poll-interval-secs=${FUNDING_POLL_INTERVAL_SECS:?Set FUNDING_POLL_INTERVAL_SECS}"
+      - "--funding-backfill-start=${FUNDING_BACKFILL_START:?Set FUNDING_BACKFILL_START}"
     restart: unless-stopped
     network_mode: host
     environment:
