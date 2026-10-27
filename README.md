@@ -67,7 +67,7 @@ HIP-3 builder dexes deploy their own perpetual markets. For example, the `xyz` d
 
 The ingestor loads the dex list with the `perpDexs` info request and each dex's markets with `meta` and `dex`. Startup fails if Hyperliquid does not list a requested dex. The ingestor collects trades, order books, funding rates and, with `--collect-bbo`, bbo updates for every active market of each dex. It skips delisted markets. The `symbols` table stores the name as Hyperliquid gives it, such as `xyz:NVDA`.
 
-The info API has no field that links a builder-dex perp to a spot token. Several spot tokens share one ticker, such as `NVDA`, `NVDAX` and `EQNVDA`. The ingestor does not match names. It collects a builder-dex perp alone unless the mapping file lists it. The ingestor logs the unmapped perps at startup for each dex.
+The info API has no field that links a builder-dex perp to a spot token. Several spot tokens share one ticker, such as `NVDA`, `NVDAX` and `EQNVDA`. The ingestor does not match names at runtime. The mapping file holds the matches, and the ingestor collects a builder-dex perp alone unless the file lists it. The ingestor logs the unmapped perps at startup for each dex.
 
 Builder-dex perps count toward the 1,000-subscription limit. With `--paired-perp-spot`, the ingestor adds them after the paired selection. Startup fails if the total exceeds the limit.
 
@@ -77,7 +77,7 @@ Compose reads the value from `PERP_DEXES`. Compose fails if `PERP_DEXES` is not 
 
 Pass `--xyz-spot-map` with the path to a TOML file. The file maps `xyz` perps to spot pairs. The option is required when `--perp-dexes` includes `xyz`. Startup fails when the option is set without `xyz`. The option has no default path.
 
-The sample file is `config/xyz-spot-map.toml`. Its header states the selection criterion. For each active `xyz:T` perp, the criterion maps the spot pair `<T>X/USDC` (the xStock wrapped token) when that pair exists. Otherwise the perp stays unmapped. Other tokenized families for the same ticker, such as `NVDA` and `EQNVDA`, are excluded by this rule. The pairing comes from this maintained file, not from an API link. Each `[[pairs]]` entry has four keys: `perp`, `spot`, `spot_token` and `rationale`. Unknown keys fail startup.
+The sample file is `config/xyz-spot-map.toml`. The pairing comes from this maintained file, not from an API link. Its header states the selection rule and a snapshot date. The rule picks, for each active `xyz:T` perp, the USDC-quoted spot pair with the highest 24 h volume among the candidates that name the company or ticker. A perp with no candidate stays unmapped. Volumes change, so a reviewer updates the file by hand. The ingestor never regenerates it at startup. Each `[[pairs]]` entry has four keys: `perp`, `spot`, `spot_token` and `rationale`. Unknown keys fail startup.
 
 At startup, the ingestor checks each entry against the live API. The perp must be an active `xyz` market. The spot pair must exist in `spotMeta`, and its base token must equal `spot_token`. A mismatch fails startup.
 

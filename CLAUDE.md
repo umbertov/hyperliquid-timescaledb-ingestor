@@ -35,7 +35,8 @@ Read `README.md` before you change the project. Maintain `README.md` and `CLAUDE
 - Store builder-dex market names as Hyperliquid names them, such as `xyz:NVDA`. Use the same name for `trades`, `l2Book`, `bbo` and `fundingHistory`.
 - Skip delisted builder-dex markets.
 - Do not pair a builder-dex perp with a spot market by name. No info API field links them, and several spot tokens share one ticker. Collect a perp without a mapping entry alone and log that no spot counterpart is verified.
-- Take builder-dex spot counterparts only from `config/xyz-spot-map.toml`, passed with `--xyz-spot-map`. Keep its header selection criterion. Do not add a default path.
+- Take builder-dex spot counterparts only from `config/xyz-spot-map.toml`, passed with `--xyz-spot-map`. Keep its header selection rule and snapshot date. Do not add a default path.
+- Pick each spot pair by hand from a live snapshot, by the highest 24 h volume among named candidates. Never regenerate the mapping at startup.
 - Require `--xyz-spot-map` when `--perp-dexes` includes `xyz`. Reject it without `xyz`.
 - Check each mapped perp against the live `xyz` meta and each mapped spot pair against `spotMeta`. Fail at startup on a mismatch, including a spot base token that differs from `spot_token`.
 - Subscribe mapped spot pairs to trades, `l2Book` and, with `--collect-bbo`, bbo. Store them with their `@index` names.

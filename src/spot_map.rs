@@ -166,6 +166,15 @@ rationale = "NVDAX quoted in USDC."
     }
 
     #[test]
+    fn sample_file_parses() {
+        let pairs = parse(include_str!("../config/xyz-spot-map.toml")).unwrap();
+        assert_eq!(pairs.len(), 11);
+        assert!(pairs
+            .iter()
+            .any(|pair| pair.perp == "xyz:NVDA" && pair.spot_token == "NVDAX"));
+    }
+
+    #[test]
     fn check_accepts_matching_live_entry() {
         let pairs = parse(VALID).unwrap();
         let perps = HashSet::from(["xyz:NVDA"]);
