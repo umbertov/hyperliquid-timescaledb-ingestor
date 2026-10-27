@@ -8,7 +8,7 @@
 # The ingestor never regenerates this file at startup. It only checks the entries against the live API.
 #
 # Selection rule, verbatim:
-# "For each active xyz:T perp, the candidates are the USDC-quoted spot pairs whose base token name contains the ticker T and whose token fullName names the same company or the ticker (checked by hand, listed below). The mapping picks the candidate with the highest 24 h notional volume (`dayNtlVlm` from `spotMetaAndAssetCtxs`) at the snapshot time. Rationale: the most liquid spot book gives the simulator the most realistic depth and the tightest spread. A perp with no candidate stays unmapped."
+# "For each active xyz:T perp, the candidates are the USDC-quoted spot pairs whose base token name contains the ticker T and whose token fullName names the same company or the ticker (checked by hand, listed below). The mapping picks the candidate with the highest 24 h notional volume (`dayNtlVlm` from `spotMetaAndAssetCtxs`) at the snapshot time. Rationale: the most liquid spot book gives the simulator the most realistic depth and the tightest spread. A perp with no candidate stays unmapped. A perp whose best candidate has zero 24 h notional volume at the snapshot stays unmapped, because a book with no trades gives the simulator no useful depth."
 #
 # Each entry has these keys:
 # - perp: the builder-dex perp name, such as "xyz:NVDA".
@@ -37,14 +37,6 @@ spot = "@1161"
 spot_token = "EQAMZN"
 rationale = "Only candidate with a fullName: EQAMZN 949.6098."
 
-# xyz:CRCL. Chosen: CRCLX, 24 h volume 0.0 (only candidate with a fullName).
-# Excluded: CRCL, 4934.35992 (null fullName). Its volume is the larger one, but the API names no company for it.
-[[pairs]]
-perp = "xyz:CRCL"
-spot = "@714"
-spot_token = "CRCLX"
-rationale = "Only candidate with a fullName: CRCLX 0.0."
-
 # xyz:META. Chosen: EQMETA, 24 h volume 2099.5491 (only candidate with a fullName).
 # Excluded: META, 0.0 (null fullName).
 [[pairs]]
@@ -52,14 +44,6 @@ perp = "xyz:META"
 spot = "@1159"
 spot_token = "EQMETA"
 rationale = "Only candidate with a fullName: EQMETA 2099.5491."
-
-# xyz:MSFT. Chosen: EQMSFT, 24 h volume 0.0 (only candidate with a fullName).
-# Excluded: MSFT, 0.0 (null fullName).
-[[pairs]]
-perp = "xyz:MSFT"
-spot = "@1160"
-spot_token = "EQMSFT"
-rationale = "Only candidate with a fullName: EQMSFT 0.0."
 
 # xyz:MU. Chosen: MUX, 24 h volume 123137.5514 (Wrapped Micron Technology xStock).
 # Rejected: EQMU, 4595.5978 (EQX Tokenized MU).
@@ -86,13 +70,6 @@ spot = "@705"
 spot_token = "SKHYX"
 rationale = "Only candidate: SKHYX 45452.9755."
 
-# xyz:SNDK. Chosen: SNDKX, 24 h volume 0.0 (only candidate).
-[[pairs]]
-perp = "xyz:SNDK"
-spot = "@709"
-spot_token = "SNDKX"
-rationale = "Only candidate: SNDKX 0.0."
-
 # xyz:SPCX. Chosen: SPCXD, 24 h volume 19991.4499 (Space Exploration Technologies Corp., the legal name of SpaceX).
 # Rejected: EQSPCX, 6166.8598 (EQX Tokenized SPCX).
 # Rejected: SPCXX, 0.0 (Wrapped SpaceX xStock).
@@ -111,6 +88,13 @@ perp = "xyz:TSLA"
 spot = "@1156"
 spot_token = "EQTSLA"
 rationale = "Highest 24 h volume among candidates: EQTSLA 490.2862, TSLA 0.0, TSLAX 0.0."
+
+# Unmapped perps whose best candidate had zero 24 h volume at the snapshot.
+# xyz:CRCL: best candidate CRCLX, 0.0 (Wrapped Circle xStock). Reason: best candidate had zero 24 h volume at the snapshot.
+# xyz:MSFT: best candidate EQMSFT, 0.0 (EQX Tokenized MSFT). Reason: best candidate had zero 24 h volume at the snapshot.
+# xyz:SNDK: best candidate SNDKX, 0.0 (Wrapped Sandisk Corporation xStock). Reason: best candidate had zero 24 h volume at the snapshot.
+# Excluded for MSFT: MSFT, 0.0 (null fullName).
+# Excluded for CRCL: CRCL, 4934.35992 (null fullName). Its volume is the larger one, but the API names no company for it.
 
 # Unmapped perps that had a token whose base name contains the ticker. Each has no eligible candidate.
 # xyz:ANT: ANT, 264.3603471 (ANT POWER) excluded, a crypto project, not a company. QUANT excluded, HypurrQuant is another project.
