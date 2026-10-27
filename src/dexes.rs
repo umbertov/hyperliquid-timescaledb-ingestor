@@ -14,8 +14,8 @@
 //!
 //! No `perpDexs`, `meta` or `spotMeta` field links a builder-dex perp to a spot token.
 //! Several spot tokens share a stock ticker (for example `NVDA`, `NVDAX` and `EQNVDA`),
-//! so a name match is not proof of a pairing. Builder-dex perps are collected without
-//! spot counterparts.
+//! so a name match is not proof of a pairing. Spot counterparts come only from the manual
+//! mapping in `spot_map`. A builder-dex perp without a mapping entry is collected alone.
 
 use color_eyre::eyre::{eyre, Result, WrapErr};
 use serde::Deserialize;

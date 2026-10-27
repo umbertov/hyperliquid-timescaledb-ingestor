@@ -7,7 +7,8 @@ use hyperliquid_rust_sdk::{BaseUrl, BookLevel, InfoClient, Message, Subscription
 use hyperliquid_timescaledb_ingestor::dexes;
 use hyperliquid_timescaledb_ingestor::funding::{self, PerpMarket};
 use hyperliquid_timescaledb_ingestor::millis_to_datetime;
-use hyperliquid_timescaledb_ingestor::models::{BboRow, OrderbookRow, TradeRow};
+use hyperliquid_timescaledb_ingestor::models::{BboRow, OrderbookRow, PerpSpotPairRow, TradeRow};
+use hyperliquid_timescaledb_ingestor::spot_map::{self, SpotPair};
 use mimalloc::MiMalloc;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -24,6 +25,8 @@ const FLUSH_INTERVAL: Duration = Duration::from_secs(1);
 const SUBSCRIPTIONS_PER_MARKET: usize = 2;
 const MAX_MARKETS: usize = 500;
 const SUBSCRIPTION_LIMIT: usize = MAX_MARKETS * SUBSCRIPTIONS_PER_MARKET;
+const XYZ_DEX: &str = "xyz";
+const MAPPING_SOURCE: &str = "mapping-file";
 
 #[derive(Parser)]
 #[command(name = "hyperliquid-timescaledb-ingestor")]
@@ -54,6 +57,11 @@ struct Args {
         help = "Comma-separated HIP-3 builder perp dexes to collect, such as xyz; pass an empty value to collect none"
     )]
     perp_dexes: Option<String>,
+    #[arg(
+        long,
+        help = "TOML file that maps xyz builder-dex perps to spot pairs; required when --perp-dexes includes xyz"
+    )]
+    xyz_spot_map: Option<PathBuf>,
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -94,6 +102,9 @@ async fn main() -> Result<()> {
     if args.perp_dexes.is_some() && args.command.is_some() {
         return Err(eyre!("--perp-dexes applies only to live collection"));
     }
+    if args.xyz_spot_map.is_some() && args.command.is_some() {
+        return Err(eyre!("--xyz-spot-map applies only to live collection"));
+    }
     if (args.funding_poll_interval_secs.is_some() || args.funding_backfill_start.is_some())
         && args.command.is_some()
     {
@@ -125,6 +136,23 @@ async fn main() -> Result<()> {
             .as_deref()
             .ok_or_else(|| eyre!("--perp-dexes is required for live collection"))?,
     )?;
+    let xyz_spot_pairs: Vec<SpotPair> = match (
+        perp_dexes.iter().any(|dex| dex == XYZ_DEX),
+        args.xyz_spot_map.as_deref(),
+    ) {
+        (true, Some(path)) => spot_map::load(path)?,
+        (true, None) => {
+            return Err(eyre!(
+                "--xyz-spot-map is required when --perp-dexes includes {XYZ_DEX}"
+            ))
+        }
+        (false, Some(_)) => {
+            return Err(eyre!(
+                "--xyz-spot-map applies only when --perp-dexes includes {XYZ_DEX}"
+            ))
+        }
+        (false, None) => Vec::new(),
+    };
     let funding_poll_interval =
         Duration::from_secs(args.funding_poll_interval_secs.ok_or_else(|| {
             eyre!("--funding-poll-interval-secs is required for live collection")
@@ -194,17 +222,45 @@ async fn main() -> Result<()> {
             .chain(spot_markets.iter().map(|(name, _)| (name.clone(), "spot")))
             .collect::<Vec<_>>()
     };
-    for (dex, dex_markets) in dexes::load_dex_markets(&perp_dexes).await? {
-        // No info API field links a builder-dex perp to a spot token (see `dexes`), so
-        // each builder-dex perp is collected without a spot counterpart.
+    let dex_markets = dexes::load_dex_markets(&perp_dexes).await?;
+    let xyz_perps: HashSet<&str> = dex_markets
+        .iter()
+        .filter(|(dex, _)| dex == XYZ_DEX)
+        .flat_map(|(_, dex_markets)| dex_markets.active.iter().map(String::as_str))
+        .collect();
+    let spot_base_tokens: HashMap<&str, &str> = spot_markets
+        .iter()
+        .map(|(coin, base)| (coin.as_str(), base.as_str()))
+        .collect();
+    spot_map::check_against_live(&xyz_spot_pairs, &xyz_perps, &spot_base_tokens)?;
+    let mapped_perps: HashSet<&str> = xyz_spot_pairs
+        .iter()
+        .map(|pair| pair.perp.as_str())
+        .collect();
+    for (dex, dex_markets) in dex_markets {
+        let unmapped: Vec<&str> = dex_markets
+            .active
+            .iter()
+            .map(String::as_str)
+            .filter(|name| !mapped_perps.contains(name))
+            .collect();
+        // The info API links no spot token to a builder-dex perp. A perp without a
+        // mapping-file entry is collected alone.
         tracing::warn!(
             dex,
-            perp_count = dex_markets.active.len(),
+            perp_count = unmapped.len(),
             delisted_skipped = dex_markets.delisted_count,
-            perps = dex_markets.active.join(","),
-            "collecting builder-dex perps without spot counterparts: the info API links no spot token to them"
+            perps = unmapped.join(","),
+            "collecting builder-dex perps without a verified spot counterpart"
         );
         markets.extend(dex_markets.active.into_iter().map(|name| (name, "perp")));
+    }
+    let mut market_names_present: HashSet<String> =
+        markets.iter().map(|(name, _)| name.clone()).collect();
+    for pair in &xyz_spot_pairs {
+        if market_names_present.insert(pair.spot.clone()) {
+            markets.push((pair.spot.clone(), "spot"));
+        }
     }
     check_subscription_budget(markets.len(), subscriptions_per_market, SUBSCRIPTION_LIMIT)?;
     let market_names: Vec<String> = markets.iter().map(|(name, _)| name.clone()).collect();
@@ -212,6 +268,22 @@ async fn main() -> Result<()> {
     info!(
         market_count = markets.len(),
         "synced perpetual and spot markets"
+    );
+    let perp_spot_rows = xyz_spot_pairs
+        .iter()
+        .map(|pair| -> Result<PerpSpotPairRow> {
+            Ok(PerpSpotPairRow {
+                perp_symbol: symbol_id(&symbol_ids, &pair.perp)?,
+                spot_symbol: symbol_id(&symbol_ids, &pair.spot)?,
+                source: MAPPING_SOURCE,
+                rationale: &pair.rationale,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    hyperliquid_timescaledb_ingestor::sync_perp_spot_pairs(&perp_spot_rows, &mut conn)?;
+    info!(
+        pair_count = perp_spot_rows.len(),
+        "synced builder-dex perp to spot pairs from the mapping file"
     );
 
     let pool = hyperliquid_timescaledb_ingestor::connection_pool(&database_url)?;
@@ -414,6 +486,13 @@ fn check_subscription_budget(
         "WebSocket subscription budget fits"
     );
     Ok(())
+}
+
+fn symbol_id(symbol_ids: &HashMap<String, i32>, name: &str) -> Result<i32> {
+    symbol_ids
+        .get(name)
+        .copied()
+        .ok_or_else(|| eyre!("market {name} has no symbol ID"))
 }
 
 fn select_paired_markets(

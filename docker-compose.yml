@@ -9,9 +9,12 @@ services:
       - "--paired-perp-spot"
       - "--funding-poll-interval-secs=${FUNDING_POLL_INTERVAL_SECS:?Set FUNDING_POLL_INTERVAL_SECS}"
       - "--funding-backfill-start=${FUNDING_BACKFILL_START:?Set FUNDING_BACKFILL_START}"
-      - "--perp-dexes=${PERP_DEXES?Set PERP_DEXES, or set it empty to collect no builder dex}"
+      - "--perp-dexes=${PERP_DEXES:?Set PERP_DEXES to a list that includes xyz}"
+      - "--xyz-spot-map=/etc/hyperliquid/xyz-spot-map.toml"
     restart: unless-stopped
     network_mode: host
     environment:
       DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL}
       RUST_LOG: ${RUST_LOG:-info}
+    volumes:
+      - "${XYZ_SPOT_MAP:?Set XYZ_SPOT_MAP to the xyz spot mapping file}:/etc/hyperliquid/xyz-spot-map.toml:ro"
