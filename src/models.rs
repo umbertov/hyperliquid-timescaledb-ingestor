@@ -1,4 +1,6 @@
-use crate::schema::{bbo_messages, funding_rates, orderbook_messages, symbols, trades};
+use crate::schema::{
+    bbo_messages, funding_rates, orderbook_messages, perp_spot_pairs, symbols, trades,
+};
 use bigdecimal::BigDecimal;
 use chrono::{DateTime, Utc};
 use diesel::prelude::*;
@@ -58,4 +60,13 @@ pub struct FundingRateRow {
     pub symbol: i32,
     pub funding_rate: BigDecimal,
     pub premium: BigDecimal,
+}
+
+#[derive(Insertable)]
+#[diesel(table_name = perp_spot_pairs)]
+pub struct PerpSpotPairRow<'a> {
+    pub perp_symbol: i32,
+    pub spot_symbol: i32,
+    pub source: &'a str,
+    pub rationale: &'a str,
 }

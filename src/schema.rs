@@ -42,6 +42,15 @@ diesel::table! {
 }
 
 diesel::table! {
+    perp_spot_pairs (perp_symbol) {
+        perp_symbol -> Int4,
+        spot_symbol -> Int4,
+        source -> Text,
+        rationale -> Text,
+    }
+}
+
+diesel::table! {
     funding_rates (time, id) {
         id -> Int8,
         time -> Timestamptz,
@@ -60,5 +69,6 @@ diesel::allow_tables_to_appear_in_same_query!(
     trades,
     orderbook_messages,
     bbo_messages,
-    funding_rates
+    funding_rates,
+    perp_spot_pairs
 );

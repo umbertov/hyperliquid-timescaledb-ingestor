@@ -1,0 +1,6 @@
+CREATE TABLE IF NOT EXISTS perp_spot_pairs (
+  perp_symbol INTEGER PRIMARY KEY REFERENCES symbols(id) ON DELETE CASCADE,
+  spot_symbol INTEGER NOT NULL UNIQUE REFERENCES symbols(id) ON DELETE CASCADE,
+  source TEXT NOT NULL,
+  rationale TEXT NOT NULL
+);
