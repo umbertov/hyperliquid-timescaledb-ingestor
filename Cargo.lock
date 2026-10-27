@@ -2110,6 +2110,7 @@ dependencies = [
  "parquet",
  "postgres",
  "pq-sys",
+ "reqwest",
  "serde",
  "serde_json",
  "tokio",

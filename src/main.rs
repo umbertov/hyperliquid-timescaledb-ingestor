@@ -4,6 +4,7 @@ use clap::{Parser, Subcommand};
 use color_eyre::eyre::{eyre, Result, WrapErr};
 use diesel::{Connection, PgConnection};
 use hyperliquid_rust_sdk::{BaseUrl, BookLevel, InfoClient, Message, Subscription};
+use hyperliquid_timescaledb_ingestor::dexes;
 use hyperliquid_timescaledb_ingestor::funding::{self, PerpMarket};
 use hyperliquid_timescaledb_ingestor::millis_to_datetime;
 use hyperliquid_timescaledb_ingestor::models::{BboRow, OrderbookRow, TradeRow};
@@ -48,6 +49,11 @@ struct Args {
         help = "RFC 3339 time, such as 2026-10-01T00:00:00Z, to backfill funding from when a market has no stored settlement"
     )]
     funding_backfill_start: Option<String>,
+    #[arg(
+        long,
+        help = "Comma-separated HIP-3 builder perp dexes to collect, such as xyz; pass an empty value to collect none"
+    )]
+    perp_dexes: Option<String>,
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -85,6 +91,9 @@ async fn main() -> Result<()> {
     if args.collect_bbo && args.command.is_some() {
         return Err(eyre!("--collect-bbo applies only to live collection"));
     }
+    if args.perp_dexes.is_some() && args.command.is_some() {
+        return Err(eyre!("--perp-dexes applies only to live collection"));
+    }
     if (args.funding_poll_interval_secs.is_some() || args.funding_backfill_start.is_some())
         && args.command.is_some()
     {
@@ -111,6 +120,11 @@ async fn main() -> Result<()> {
         .wrap_err("export task failed")?;
     }
 
+    let perp_dexes = dexes::parse_perp_dexes(
+        args.perp_dexes
+            .as_deref()
+            .ok_or_else(|| eyre!("--perp-dexes is required for live collection"))?,
+    )?;
     let funding_poll_interval =
         Duration::from_secs(args.funding_poll_interval_secs.ok_or_else(|| {
             eyre!("--funding-poll-interval-secs is required for live collection")
@@ -170,30 +184,29 @@ async fn main() -> Result<()> {
     // 1,000-subscription limit is per IP, not per connection, so an enabled `bbo`
     // subscription per market must still count against it here.
     let subscriptions_per_market = SUBSCRIPTIONS_PER_MARKET + usize::from(args.collect_bbo);
-    let markets = if args.paired_perp_spot {
-        select_paired_markets(
-            &perpetual_markets,
-            &spot_markets,
-            subscriptions_per_market,
-            SUBSCRIPTION_LIMIT,
-        )?
+    let mut markets = if args.paired_perp_spot {
+        select_paired_markets(&perpetual_markets, &spot_markets)?
     } else {
-        let markets = perpetual_markets
+        perpetual_markets
             .iter()
             .cloned()
             .map(|name| (name, "perp"))
             .chain(spot_markets.iter().map(|(name, _)| (name.clone(), "spot")))
-            .collect::<Vec<_>>();
-        if markets.len() * subscriptions_per_market > SUBSCRIPTION_LIMIT {
-            return Err(eyre!(
-                "all {} markets need {} subscriptions, above the per-IP limit of {}; run with --paired-perp-spot",
-                markets.len(),
-                markets.len() * subscriptions_per_market,
-                SUBSCRIPTION_LIMIT
-            ));
-        }
-        markets
+            .collect::<Vec<_>>()
     };
+    for (dex, dex_markets) in dexes::load_dex_markets(&perp_dexes).await? {
+        // No info API field links a builder-dex perp to a spot token (see `dexes`), so
+        // each builder-dex perp is collected without a spot counterpart.
+        tracing::warn!(
+            dex,
+            perp_count = dex_markets.active.len(),
+            delisted_skipped = dex_markets.delisted_count,
+            perps = dex_markets.active.join(","),
+            "collecting builder-dex perps without spot counterparts: the info API links no spot token to them"
+        );
+        markets.extend(dex_markets.active.into_iter().map(|name| (name, "perp")));
+    }
+    check_subscription_budget(markets.len(), subscriptions_per_market, SUBSCRIPTION_LIMIT)?;
     let market_names: Vec<String> = markets.iter().map(|(name, _)| name.clone()).collect();
     let symbol_ids = hyperliquid_timescaledb_ingestor::sync_symbols(&markets, &mut conn)?;
     info!(
@@ -381,11 +394,31 @@ async fn poll_task(
     handle.await
 }
 
+/// Fails if `market_count` markets need more WebSocket subscriptions than the per-IP
+/// limit allows.
+fn check_subscription_budget(
+    market_count: usize,
+    subscriptions_per_market: usize,
+    subscription_limit: usize,
+) -> Result<()> {
+    let needed = market_count * subscriptions_per_market;
+    if needed > subscription_limit {
+        return Err(eyre!(
+            "{market_count} markets need {needed} WebSocket subscriptions, above the per-IP limit of {subscription_limit}; select fewer markets with --paired-perp-spot, --perp-dexes or without --collect-bbo"
+        ));
+    }
+    info!(
+        market_count,
+        subscription_count = needed,
+        subscription_limit,
+        "WebSocket subscription budget fits"
+    );
+    Ok(())
+}
+
 fn select_paired_markets(
     perpetual_markets: &[String],
     spot_markets: &[(String, String)],
-    subscriptions_per_market: usize,
-    subscription_limit: usize,
 ) -> Result<Vec<(String, &'static str)>> {
     let spot_bases: HashSet<&str> = spot_markets
         .iter()
@@ -412,14 +445,6 @@ fn select_paired_markets(
             push_market(&mut selected, &mut selected_names, name.clone(), "spot");
         }
     }
-    if selected.len() * subscriptions_per_market > subscription_limit {
-        return Err(eyre!(
-            "{} paired spot and perpetual markets need {} subscriptions, above the limit of {}",
-            selected.len(),
-            selected.len() * subscriptions_per_market,
-            subscription_limit
-        ));
-    }
     let paired_perpetual_count = paired_perpetuals.len();
     let perpetual_count = selected.iter().filter(|(_, kind)| *kind == "perp").count();
     let spot_count = selected.len() - perpetual_count;
@@ -428,7 +453,6 @@ fn select_paired_markets(
         paired_perpetual_count,
         perpetual_count,
         spot_count,
-        subscription_count = selected.len() * subscriptions_per_market,
         "selected markets with both spot and perpetual data"
     );
     Ok(selected)
@@ -535,5 +559,11 @@ mod tests {
     #[test]
     fn cli_definition_is_valid() {
         Args::command().debug_assert();
+    }
+
+    #[test]
+    fn subscription_budget_rejects_excess() {
+        assert!(check_subscription_budget(500, 2, 1000).is_ok());
+        assert!(check_subscription_budget(334, 3, 1000).is_err());
     }
 }
