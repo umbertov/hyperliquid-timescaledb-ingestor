@@ -1,0 +1,63 @@
+# Spot counterparts of xyz builder-dex perps.
+#
+# The Hyperliquid info API has no field that links a builder-dex perp to a spot token.
+# This file is a manual mapping. Update it when xyz adds, delists or renames a perp,
+# or when a spot token changes. The ingestor fails at startup if an entry does not match
+# the live API.
+#
+# Selection criterion, used for the entries below:
+# for each active `xyz:*` perp whose ticker T has exactly one candidate family, prefer the spot token named `<T>X` (the xStock wrapped token, e.g. NVDAX) quoted in USDC, because xStocks are 1:1 backed by the underlying share by their issuer and are the most widely traded tokenized-stock family on Hyperliquid spot; if no `<T>X`/USDC pair exists, leave the perp unmapped.
+#
+# Each entry has these keys:
+# - perp: the builder-dex perp name, such as "xyz:NVDA".
+# - spot: the spot pair name that the WebSocket subscription uses, such as "@702".
+# - spot_token: the base token of that pair, such as "NVDAX". The ingestor checks it.
+# - rationale: a short reason for the entry.
+
+[[pairs]]
+perp = "xyz:AAPL"
+spot = "@713"
+spot_token = "AAPLX"
+rationale = "AAPLX quoted in USDC is the xStock token for AAPL."
+
+[[pairs]]
+perp = "xyz:CRCL"
+spot = "@714"
+spot_token = "CRCLX"
+rationale = "CRCLX quoted in USDC is the xStock token for CRCL."
+
+[[pairs]]
+perp = "xyz:MU"
+spot = "@706"
+spot_token = "MUX"
+rationale = "MUX quoted in USDC is the xStock token for MU."
+
+[[pairs]]
+perp = "xyz:NVDA"
+spot = "@702"
+spot_token = "NVDAX"
+rationale = "NVDAX quoted in USDC is the xStock token for NVDA."
+
+[[pairs]]
+perp = "xyz:SKHY"
+spot = "@705"
+spot_token = "SKHYX"
+rationale = "SKHYX quoted in USDC is the xStock token for SKHY."
+
+[[pairs]]
+perp = "xyz:SNDK"
+spot = "@709"
+spot_token = "SNDKX"
+rationale = "SNDKX quoted in USDC is the xStock token for SNDK."
+
+[[pairs]]
+perp = "xyz:SPCX"
+spot = "@710"
+spot_token = "SPCXX"
+rationale = "SPCXX quoted in USDC is the xStock token for SPCX."
+
+[[pairs]]
+perp = "xyz:TSLA"
+spot = "@712"
+spot_token = "TSLAX"
+rationale = "TSLAX quoted in USDC is the xStock token for TSLA."
