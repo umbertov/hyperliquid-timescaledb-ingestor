@@ -178,6 +178,15 @@ mod tests {
     }
 
     #[test]
+    fn accepts_builder_dex_coin() {
+        // Live fundingHistory response for coin "xyz:NVDA" on 2026-10-27.
+        let text = r#"[{"coin":"xyz:NVDA","fundingRate":"0.00000625","premium":"0.0002929116","time":1793106000049}]"#;
+        let rows = funding_rows("xyz:NVDA", 9, page(text)).expect("page converts");
+        assert_eq!(rows[0].funding_rate.to_string(), "0.00000625");
+        assert!(funding_rows("NVDA", 9, page(text)).is_err());
+    }
+
+    #[test]
     fn rejects_numeric_funding_rate() {
         let text = r#"[{"coin":"ETH","fundingRate":-0.00022196,"premium":"0","time":1}]"#;
         assert!(serde_json::from_str::<Vec<FundingHistoryResponse>>(text).is_err());
