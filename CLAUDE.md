@@ -27,6 +27,16 @@ Read `README.md` before you change the project. Maintain `README.md` and `CLAUDE
 - Require `--funding-poll-interval-secs` and `--funding-backfill-start` for live collection. Do not add defaults.
 - Fail on a response row for another coin, a row before the requested start, or a decimal field that is not an exact number.
 
+## Builder-dex collection
+
+- Require `--perp-dexes` for live collection. It takes a comma-separated list of HIP-3 builder perp dexes, such as `xyz`. An empty value selects none. Do not add a default.
+- `hyperliquid_rust_sdk` 0.6.0 sends `meta` without `dex`. Load `perpDexs` and `meta` with `dex` over HTTP in `src/dexes.rs`.
+- Fail at startup if Hyperliquid does not list a requested dex, or if a market name lacks the `<dex>:` prefix.
+- Store builder-dex market names as Hyperliquid names them, such as `xyz:NVDA`. Use the same name for `trades`, `l2Book`, `bbo` and `fundingHistory`.
+- Skip delisted builder-dex markets.
+- Do not pair a builder-dex perp with a spot market by name. No info API field links them, and several spot tokens share one ticker. Collect the perp alone and log that no spot counterpart is verified.
+- Add builder-dex perps after the `--paired-perp-spot` selection. Count them in the subscription limit.
+
 ## bbo collection
 
 - Collect the `bbo` channel only when `--collect-bbo` is set. The default is off, so the flag changes no existing deployment.

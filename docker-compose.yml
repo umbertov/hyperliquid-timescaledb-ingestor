@@ -9,6 +9,7 @@ services:
       - "--paired-perp-spot"
       - "--funding-poll-interval-secs=${FUNDING_POLL_INTERVAL_SECS:?Set FUNDING_POLL_INTERVAL_SECS}"
       - "--funding-backfill-start=${FUNDING_BACKFILL_START:?Set FUNDING_BACKFILL_START}"
+      - "--perp-dexes=${PERP_DEXES?Set PERP_DEXES, or set it empty to collect no builder dex}"
     restart: unless-stopped
     network_mode: host
     environment:

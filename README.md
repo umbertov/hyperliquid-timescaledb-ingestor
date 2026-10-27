@@ -37,7 +37,7 @@ Pass `--paired-perp-spot` to collect only symbols with both spot and perpetual m
 Run paired collection directly from the project root:
 
 ```sh
-nix run .#default -- --paired-perp-spot
+nix run .#default -- --paired-perp-spot --perp-dexes xyz --funding-poll-interval-secs 3600 --funding-backfill-start 2026-10-01T00:00:00Z
 ```
 
 Compose passes `--paired-perp-spot` to the ingestor by default. Run `nix run .#compose -- down` to stop the service.
@@ -56,10 +56,22 @@ Set both options. The ingestor fails at startup if either option is missing:
 Compose reads both values from `FUNDING_POLL_INTERVAL_SECS` and `FUNDING_BACKFILL_START`. Set them in `.env` before you start the service.
 
 ```sh
-nix run .#default -- --paired-perp-spot --funding-poll-interval-secs 3600 --funding-backfill-start 2026-10-01T00:00:00Z
+nix run .#default -- --paired-perp-spot --perp-dexes xyz --funding-poll-interval-secs 3600 --funding-backfill-start 2026-10-01T00:00:00Z
 ```
 
 The poller collects only the perpetual markets that the run selects. It does not collect predicted funding rates.
+
+### Builder-dex collection
+
+HIP-3 builder dexes deploy their own perpetual markets. For example, the `xyz` dex lists tokenized stocks such as `xyz:NVDA`. The `--perp-dexes` option selects the builder dexes to collect. It is required for live collection. Pass a comma-separated list, such as `--perp-dexes xyz`. Pass an empty value, `--perp-dexes ''`, to collect no builder dex.
+
+The ingestor loads the dex list with the `perpDexs` info request and each dex's markets with `meta` and `dex`. Startup fails if Hyperliquid does not list a requested dex. The ingestor collects trades, order books, funding rates and, with `--collect-bbo`, bbo updates for every active market of each dex. It skips delisted markets. The `symbols` table stores the name as Hyperliquid gives it, such as `xyz:NVDA`.
+
+The ingestor does not collect spot counterparts for builder-dex perps. No `perpDexs`, `meta` or `spotMeta` field links a builder-dex perp to a spot token. Several spot tokens share one ticker, such as `NVDA`, `NVDAX` and `EQNVDA`. The ingestor logs this at startup for each dex.
+
+Builder-dex perps count toward the 1,000-subscription limit. With `--paired-perp-spot`, the ingestor adds them after the paired selection. Startup fails if the total exceeds the limit.
+
+Compose reads the value from `PERP_DEXES`. Compose fails if `PERP_DEXES` is not set. An empty `PERP_DEXES=` selects no builder dex.
 
 ### bbo collection
 
@@ -70,8 +82,23 @@ The `l2Book` channel updates roughly once every 5.4 seconds per market. The `bbo
 Each enabled `bbo` subscription counts toward the same 1,000-subscription-per-IP limit as `l2Book` and `trades`, even though it uses a separate connection. Startup fails if `--collect-bbo` would push the total subscription count over that limit.
 
 ```sh
-nix run .#default -- --paired-perp-spot --collect-bbo
+nix run .#default -- --paired-perp-spot --collect-bbo --perp-dexes xyz --funding-poll-interval-secs 3600 --funding-backfill-start 2026-10-01T00:00:00Z
 ```
+
+## Deploy
+
+Do these steps in this order. The ingestor needs the `funding_rates` table before it starts.
+
+1. Stop the running service with `nix run .#compose -- down`.
+2. Apply the migration `migrations/2026-10-27-000001_funding_rates/up.sql`. Apply any earlier migration that the database does not have first. With the diesel CLI, run `diesel migration run`.
+3. Add these values to `.env`:
+   - `FUNDING_POLL_INTERVAL_SECS`, the seconds between polling passes, for example `3600`. Funding settles once each hour.
+   - `FUNDING_BACKFILL_START`, the first settlement time to load for a market with no stored funding.
+   - `PERP_DEXES`, for example `xyz`, or empty for no builder dex.
+4. Start the service with `nix run .#up`.
+5. Read the logs. Make sure that the subscription budget line appears and that `polled funding history` appears after the backfill.
+
+Choose `FUNDING_BACKFILL_START` deliberately. The value applies only to markets with no stored funding. After the first pass, each market continues from its newest stored settlement, so a later change has no effect on those markets. An early start loads more history but makes the first pass longer. The info API returns at most 500 elements for each time-range request, and the poller sends one request per second. Funding settles each hour, so 30 days of history is 720 rows, or two requests for each market. With about 170 perps, a start 30 days back takes about six minutes. The funding poller runs beside the WebSocket collection, so trades and order books arrive during the backfill.
 
 ## Export data
 
