@@ -28,7 +28,7 @@
             value = toString path;
             relative = if value == root then "" else pkgs.lib.removePrefix "${root}/" value;
             source = builtins.any (dir: relative == dir || pkgs.lib.hasPrefix "${dir}/" relative)
-              [ "src" "tests" "benches" "examples" ".cargo" ];
+              [ "src" "tests" "benches" "examples" ".cargo" "config" ];
             buildFile = builtins.elem relative [ "Cargo.toml" "Cargo.lock" "build.rs" "rust-toolchain" "rust-toolchain.toml" ];
           in value == root || source || buildFile;
       };

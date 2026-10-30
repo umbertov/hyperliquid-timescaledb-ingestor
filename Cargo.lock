@@ -2110,10 +2110,12 @@ dependencies = [
  "parquet",
  "postgres",
  "pq-sys",
+ "reqwest",
  "serde",
  "serde_json",
  "tokio",
  "tokio-tungstenite",
+ "toml",
  "tracing",
  "tracing-subscriber",
 ]

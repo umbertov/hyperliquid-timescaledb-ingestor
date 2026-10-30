@@ -22,11 +22,13 @@ futures-util = "0.3"
 hyperliquid_rust_sdk = "0.6"
 mimalloc = { version = "0.1", features = ["secure"] }
 parquet = { version = "56", features = ["arrow", "zstd"] }
+reqwest = { version = "0.11", features = ["json"] }
 postgres = { version = "0.19", features = ["with-chrono-0_4", "with-serde_json-1"] }
 pq-sys = { version = "0.7", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 tokio-tungstenite = { version = "0.20", features = ["native-tls"] }
+toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

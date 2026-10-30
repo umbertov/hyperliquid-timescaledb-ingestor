@@ -1,0 +1,111 @@
+# Spot counterparts of xyz builder-dex perps.
+#
+# The Hyperliquid info API has no field that links a builder-dex perp to a spot token.
+# This file maps each perp by hand, from one snapshot of the live API.
+#
+# Snapshot: 2026-10-27 18:08 UTC. Source: spotMetaAndAssetCtxs (dayNtlVlm) and meta with dex "xyz".
+# Volumes change over time. A reviewer checks this file by hand and updates it by hand.
+# The ingestor never regenerates this file at startup. It only checks the entries against the live API.
+#
+# Selection rule, verbatim:
+# "For each active xyz:T perp, the candidates are the USDC-quoted spot pairs whose base token name contains the ticker T and whose token fullName names the same company or the ticker (checked by hand, listed below). The mapping picks the candidate with the highest 24 h notional volume (`dayNtlVlm` from `spotMetaAndAssetCtxs`) at the snapshot time. Rationale: the most liquid spot book gives the simulator the most realistic depth and the tightest spread. A perp with no candidate stays unmapped. A perp whose best candidate has zero 24 h notional volume at the snapshot stays unmapped, because a book with no trades gives the simulator no useful depth."
+#
+# Each entry has these keys:
+# - perp: the builder-dex perp name, such as "xyz:NVDA".
+# - spot: the spot pair name that the WebSocket subscription uses, such as "@702".
+# - spot_token: the base token of that pair. The ingestor checks it against spotMeta.
+# - rationale: a short reason for the entry.
+#
+# Each entry lists its rejected candidates and their volumes above the entry.
+# Candidates with a null fullName are excluded. The API does not name a company or ticker for them.
+# The comments below show every excluded candidate with a one-line reason.
+
+# xyz:AAPL. Chosen: EQAAPL, 24 h volume 3860.4229.
+# Rejected: AAPLX, 0.0 (Wrapped Apple xStock).
+# Excluded: AAPL, 0.0 (null fullName).
+[[pairs]]
+perp = "xyz:AAPL"
+spot = "@1157"
+spot_token = "EQAAPL"
+rationale = "Highest 24 h volume among candidates: EQAAPL 3860.4229, AAPLX 0.0."
+
+# xyz:AMZN. Chosen: EQAMZN, 24 h volume 949.6098 (only candidate with a fullName).
+# Excluded: AMZN, 0.0 (null fullName).
+[[pairs]]
+perp = "xyz:AMZN"
+spot = "@1161"
+spot_token = "EQAMZN"
+rationale = "Only candidate with a fullName: EQAMZN 949.6098."
+
+# xyz:META. Chosen: EQMETA, 24 h volume 2099.5491 (only candidate with a fullName).
+# Excluded: META, 0.0 (null fullName).
+[[pairs]]
+perp = "xyz:META"
+spot = "@1159"
+spot_token = "EQMETA"
+rationale = "Only candidate with a fullName: EQMETA 2099.5491."
+
+# xyz:MU. Chosen: MUX, 24 h volume 123137.5514 (Wrapped Micron Technology xStock).
+# Rejected: EQMU, 4595.5978 (EQX Tokenized MU).
+# Excluded: MU, 0.0 (null fullName).
+# Excluded: MUNCH, 0.0 (a meme project, not Micron; the match is on the letters MU only).
+[[pairs]]
+perp = "xyz:MU"
+spot = "@706"
+spot_token = "MUX"
+rationale = "Highest 24 h volume among candidates: MUX 123137.5514, EQMU 4595.5978."
+
+# xyz:NVDA. Chosen: NVDAX, 24 h volume 200390.3231 (Wrapped NVIDIA xStock).
+# Rejected: EQNVDA, 4648.798 (EQX Tokenized NVDA).
+[[pairs]]
+perp = "xyz:NVDA"
+spot = "@702"
+spot_token = "NVDAX"
+rationale = "Highest 24 h volume among candidates: NVDAX 200390.3231, EQNVDA 4648.798."
+
+# xyz:SKHY. Chosen: SKHYX, 24 h volume 45452.9755 (only candidate).
+[[pairs]]
+perp = "xyz:SKHY"
+spot = "@705"
+spot_token = "SKHYX"
+rationale = "Only candidate: SKHYX 45452.9755."
+
+# xyz:SPCX. Chosen: SPCXD, 24 h volume 19991.4499 (Space Exploration Technologies Corp., the legal name of SpaceX).
+# Rejected: EQSPCX, 6166.8598 (EQX Tokenized SPCX).
+# Rejected: SPCXX, 0.0 (Wrapped SpaceX xStock).
+# Excluded: SPCX, 0.0 (null fullName).
+[[pairs]]
+perp = "xyz:SPCX"
+spot = "@465"
+spot_token = "SPCXD"
+rationale = "Highest 24 h volume among candidates: SPCXD 19991.4499, EQSPCX 6166.8598, SPCXX 0.0."
+
+# xyz:TSLA. Chosen: EQTSLA, 24 h volume 490.2862 (EQX Tokenized TSLA).
+# Rejected: TSLA, 0.0 (Tesla - Wagyu.xyz).
+# Rejected: TSLAX, 0.0 (Wrapped Tesla xStock).
+[[pairs]]
+perp = "xyz:TSLA"
+spot = "@1156"
+spot_token = "EQTSLA"
+rationale = "Highest 24 h volume among candidates: EQTSLA 490.2862, TSLA 0.0, TSLAX 0.0."
+
+# Unmapped perps whose best candidate had zero 24 h volume at the snapshot.
+# xyz:CRCL: best candidate CRCLX, 0.0 (Wrapped Circle xStock). Reason: best candidate had zero 24 h volume at the snapshot.
+# xyz:MSFT: best candidate EQMSFT, 0.0 (EQX Tokenized MSFT). Reason: best candidate had zero 24 h volume at the snapshot.
+# xyz:SNDK: best candidate SNDKX, 0.0 (Wrapped Sandisk Corporation xStock). Reason: best candidate had zero 24 h volume at the snapshot.
+# Excluded for MSFT: MSFT, 0.0 (null fullName).
+# Excluded for CRCL: CRCL, 4934.35992 (null fullName). Its volume is the larger one, but the API names no company for it.
+
+# Unmapped perps that had a token whose base name contains the ticker. Each has no eligible candidate.
+# xyz:ANT: ANT, 264.3603471 (ANT POWER) excluded, a crypto project, not a company. QUANT excluded, HypurrQuant is another project.
+# xyz:ARM: FARM excluded, a game project, not ARM. FARMED excluded, null fullName.
+# xyz:AVGO: AVGO excluded, null fullName.
+# xyz:BE: BEATS excluded, an AI music project. BERA, BIGBEN, KOBE excluded, null fullName.
+# xyz:CL: CRCL and CRCLX excluded, they name Circle, not the company behind CL. ORCL excluded, null fullName.
+# xyz:GME: GMEOW excluded, null fullName.
+# xyz:GOOGL: GOOGL excluded, null fullName. EQGOOG excluded, its base name does not contain GOOGL.
+# xyz:HO: HODL, HOLD, HOP, HOPE, HORSY, SHOE excluded, other projects. HOOD excluded, null fullName.
+# xyz:HOOD: HOOD excluded, null fullName.
+# xyz:ORCL: ORCL excluded, null fullName.
+#
+# Other active perps have no token whose base name contains the ticker. They stay unmapped.

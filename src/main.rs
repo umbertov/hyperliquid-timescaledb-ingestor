@@ -1,10 +1,14 @@
 use bigdecimal::BigDecimal;
+use chrono::{DateTime, Utc};
 use clap::{Parser, Subcommand};
 use color_eyre::eyre::{eyre, Result, WrapErr};
 use diesel::{Connection, PgConnection};
 use hyperliquid_rust_sdk::{BaseUrl, BookLevel, InfoClient, Message, Subscription};
+use hyperliquid_timescaledb_ingestor::dexes;
+use hyperliquid_timescaledb_ingestor::funding::{self, PerpMarket};
 use hyperliquid_timescaledb_ingestor::millis_to_datetime;
-use hyperliquid_timescaledb_ingestor::models::{BboRow, OrderbookRow, TradeRow};
+use hyperliquid_timescaledb_ingestor::models::{BboRow, OrderbookRow, PerpSpotPairRow, TradeRow};
+use hyperliquid_timescaledb_ingestor::spot_map::{self, SpotPair};
 use mimalloc::MiMalloc;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -21,6 +25,8 @@ const FLUSH_INTERVAL: Duration = Duration::from_secs(1);
 const SUBSCRIPTIONS_PER_MARKET: usize = 2;
 const MAX_MARKETS: usize = 500;
 const SUBSCRIPTION_LIMIT: usize = MAX_MARKETS * SUBSCRIPTIONS_PER_MARKET;
+const XYZ_DEX: &str = "xyz";
+const MAPPING_SOURCE: &str = "mapping-file";
 
 #[derive(Parser)]
 #[command(name = "hyperliquid-timescaledb-ingestor")]
@@ -35,6 +41,27 @@ struct Args {
         help = "Also collect the bbo (best bid/offer) channel over a separate WebSocket connection; off by default"
     )]
     collect_bbo: bool,
+    #[arg(
+        long,
+        value_parser = clap::value_parser!(u64).range(1..),
+        help = "Seconds to wait after each full pass of funding-rate polling"
+    )]
+    funding_poll_interval_secs: Option<u64>,
+    #[arg(
+        long,
+        help = "RFC 3339 time, such as 2026-10-01T00:00:00Z, to backfill funding from when a market has no stored settlement"
+    )]
+    funding_backfill_start: Option<String>,
+    #[arg(
+        long,
+        help = "Comma-separated HIP-3 builder perp dexes to collect, such as xyz; pass an empty value to collect none"
+    )]
+    perp_dexes: Option<String>,
+    #[arg(
+        long,
+        help = "TOML file that maps xyz builder-dex perps to spot pairs; required when --perp-dexes includes xyz. The XYZ_SPOT_MAP variable sets it when the flag is absent; an empty value counts as unset"
+    )]
+    xyz_spot_map: Option<PathBuf>,
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -72,6 +99,19 @@ async fn main() -> Result<()> {
     if args.collect_bbo && args.command.is_some() {
         return Err(eyre!("--collect-bbo applies only to live collection"));
     }
+    if args.perp_dexes.is_some() && args.command.is_some() {
+        return Err(eyre!("--perp-dexes applies only to live collection"));
+    }
+    if xyz_spot_map(&args).is_some() && args.command.is_some() {
+        return Err(eyre!("--xyz-spot-map applies only to live collection"));
+    }
+    if (args.funding_poll_interval_secs.is_some() || args.funding_backfill_start.is_some())
+        && args.command.is_some()
+    {
+        return Err(eyre!(
+            "--funding-poll-interval-secs and --funding-backfill-start apply only to live collection"
+        ));
+    }
     if let Some(Command::Export {
         output_dir,
         symbols,
@@ -91,6 +131,39 @@ async fn main() -> Result<()> {
         .wrap_err("export task failed")?;
     }
 
+    let perp_dexes = dexes::parse_perp_dexes(
+        args.perp_dexes
+            .as_deref()
+            .ok_or_else(|| eyre!("--perp-dexes is required for live collection"))?,
+    )?;
+    let xyz_spot_pairs: Vec<SpotPair> = match (
+        perp_dexes.iter().any(|dex| dex == XYZ_DEX),
+        xyz_spot_map(&args),
+    ) {
+        (true, Some(path)) => spot_map::load(&path)?,
+        (true, None) => {
+            return Err(eyre!(
+                "--xyz-spot-map is required when --perp-dexes includes {XYZ_DEX}"
+            ))
+        }
+        (false, Some(_)) => {
+            return Err(eyre!(
+                "--xyz-spot-map applies only when --perp-dexes includes {XYZ_DEX}"
+            ))
+        }
+        (false, None) => Vec::new(),
+    };
+    let funding_poll_interval =
+        Duration::from_secs(args.funding_poll_interval_secs.ok_or_else(|| {
+            eyre!("--funding-poll-interval-secs is required for live collection")
+        })?);
+    let funding_backfill_start = DateTime::parse_from_rfc3339(
+        args.funding_backfill_start
+            .as_deref()
+            .ok_or_else(|| eyre!("--funding-backfill-start is required for live collection"))?,
+    )
+    .wrap_err("parsing --funding-backfill-start")?
+    .with_timezone(&Utc);
     let database_url = std::env::var("DATABASE_URL").wrap_err("DATABASE_URL must be set")?;
     let mut conn = PgConnection::establish(&database_url).wrap_err("connecting to PostgreSQL")?;
     let info_client = InfoClient::with_reconnect(None, Some(BaseUrl::Mainnet))
@@ -139,38 +212,101 @@ async fn main() -> Result<()> {
     // 1,000-subscription limit is per IP, not per connection, so an enabled `bbo`
     // subscription per market must still count against it here.
     let subscriptions_per_market = SUBSCRIPTIONS_PER_MARKET + usize::from(args.collect_bbo);
-    let markets = if args.paired_perp_spot {
-        select_paired_markets(
-            &perpetual_markets,
-            &spot_markets,
-            subscriptions_per_market,
-            SUBSCRIPTION_LIMIT,
-        )?
+    let mut markets = if args.paired_perp_spot {
+        select_paired_markets(&perpetual_markets, &spot_markets)?
     } else {
-        let markets = perpetual_markets
+        perpetual_markets
             .iter()
             .cloned()
             .map(|name| (name, "perp"))
             .chain(spot_markets.iter().map(|(name, _)| (name.clone(), "spot")))
-            .collect::<Vec<_>>();
-        if markets.len() * subscriptions_per_market > SUBSCRIPTION_LIMIT {
-            return Err(eyre!(
-                "all {} markets need {} subscriptions, above the per-IP limit of {}; run with --paired-perp-spot",
-                markets.len(),
-                markets.len() * subscriptions_per_market,
-                SUBSCRIPTION_LIMIT
-            ));
-        }
-        markets
+            .collect::<Vec<_>>()
     };
+    let dex_markets = dexes::load_dex_markets(&perp_dexes).await?;
+    let xyz_perps: HashSet<&str> = dex_markets
+        .iter()
+        .filter(|(dex, _)| dex == XYZ_DEX)
+        .flat_map(|(_, dex_markets)| dex_markets.active.iter().map(String::as_str))
+        .collect();
+    let spot_base_tokens: HashMap<&str, &str> = spot_markets
+        .iter()
+        .map(|(coin, base)| (coin.as_str(), base.as_str()))
+        .collect();
+    spot_map::check_against_live(&xyz_spot_pairs, &xyz_perps, &spot_base_tokens)?;
+    let mapped_perps: HashSet<&str> = xyz_spot_pairs
+        .iter()
+        .map(|pair| pair.perp.as_str())
+        .collect();
+    for (dex, dex_markets) in dex_markets {
+        let unmapped: Vec<&str> = dex_markets
+            .active
+            .iter()
+            .map(String::as_str)
+            .filter(|name| !mapped_perps.contains(name))
+            .collect();
+        // The info API links no spot token to a builder-dex perp. A perp without a
+        // mapping-file entry is collected alone.
+        tracing::warn!(
+            dex,
+            perp_count = unmapped.len(),
+            delisted_skipped = dex_markets.delisted_count,
+            perps = unmapped.join(","),
+            "collecting builder-dex perps without a verified spot counterpart"
+        );
+        markets.extend(dex_markets.active.into_iter().map(|name| (name, "perp")));
+    }
+    let mut market_names_present: HashSet<String> =
+        markets.iter().map(|(name, _)| name.clone()).collect();
+    for pair in &xyz_spot_pairs {
+        if market_names_present.insert(pair.spot.clone()) {
+            markets.push((pair.spot.clone(), "spot"));
+        }
+    }
+    check_subscription_budget(markets.len(), subscriptions_per_market, SUBSCRIPTION_LIMIT)?;
     let market_names: Vec<String> = markets.iter().map(|(name, _)| name.clone()).collect();
     let symbol_ids = hyperliquid_timescaledb_ingestor::sync_symbols(&markets, &mut conn)?;
     info!(
         market_count = markets.len(),
         "synced perpetual and spot markets"
     );
+    let perp_spot_rows = xyz_spot_pairs
+        .iter()
+        .map(|pair| -> Result<PerpSpotPairRow> {
+            Ok(PerpSpotPairRow {
+                perp_symbol: symbol_id(&symbol_ids, &pair.perp)?,
+                spot_symbol: symbol_id(&symbol_ids, &pair.spot)?,
+                source: MAPPING_SOURCE,
+                rationale: &pair.rationale,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    hyperliquid_timescaledb_ingestor::sync_perp_spot_pairs(&perp_spot_rows, &mut conn)?;
+    info!(
+        pair_count = perp_spot_rows.len(),
+        "synced builder-dex perp to spot pairs from the mapping file"
+    );
 
     let pool = hyperliquid_timescaledb_ingestor::connection_pool(&database_url)?;
+    let funding_markets = markets
+        .iter()
+        .filter(|(_, kind)| *kind == "perp")
+        .map(|(name, _)| -> Result<PerpMarket> {
+            let symbol = *symbol_ids
+                .get(name)
+                .ok_or_else(|| eyre!("perpetual market {name} has no symbol ID"))?;
+            Ok(PerpMarket {
+                name: name.clone(),
+                symbol,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let mut funding_task = tokio::spawn(funding::run(
+        funding_markets,
+        info_client,
+        pool.clone(),
+        funding_poll_interval,
+        funding_backfill_start,
+    ));
     let (tx, rx) = mpsc::channel(BATCH_CAPACITY * 4);
     tokio::spawn(writer_task(rx, pool));
     let (ws_tx, mut ws_rx) = mpsc::unbounded_channel();
@@ -232,6 +368,13 @@ async fn main() -> Result<()> {
                     Ok(Ok(())) => Err(eyre!("bbo collector stopped unexpectedly")),
                     Ok(Err(error)) => Err(error.wrap_err("bbo collector failed")),
                     Err(join_error) => Err(eyre!(join_error).wrap_err("bbo collector task panicked")),
+                };
+            }
+            result = poll_task(&mut funding_task) => {
+                return match result {
+                    Ok(Ok(())) => Err(eyre!("funding poller stopped unexpectedly")),
+                    Ok(Err(error)) => Err(error.wrap_err("funding poller failed")),
+                    Err(join_error) => Err(eyre!(join_error).wrap_err("funding poller task panicked")),
                 };
             }
         };
@@ -317,11 +460,54 @@ async fn poll_bbo_task(
     }
 }
 
+async fn poll_task(
+    handle: &mut JoinHandle<Result<()>>,
+) -> std::result::Result<Result<()>, tokio::task::JoinError> {
+    handle.await
+}
+
+/// Fails if `market_count` markets need more WebSocket subscriptions than the per-IP
+/// limit allows.
+fn check_subscription_budget(
+    market_count: usize,
+    subscriptions_per_market: usize,
+    subscription_limit: usize,
+) -> Result<()> {
+    let needed = market_count * subscriptions_per_market;
+    if needed > subscription_limit {
+        return Err(eyre!(
+            "{market_count} markets need {needed} WebSocket subscriptions, above the per-IP limit of {subscription_limit}; select fewer markets with --paired-perp-spot, --perp-dexes or without --collect-bbo"
+        ));
+    }
+    info!(
+        market_count,
+        subscription_count = needed,
+        subscription_limit,
+        "WebSocket subscription budget fits"
+    );
+    Ok(())
+}
+
+/// Returns the mapping-file path from `--xyz-spot-map`, or from `XYZ_SPOT_MAP` when the
+/// flag is absent. An empty value counts as unset, so Compose can pass the variable
+/// when `PERP_DEXES` is empty.
+fn xyz_spot_map(args: &Args) -> Option<PathBuf> {
+    args.xyz_spot_map
+        .clone()
+        .or_else(|| std::env::var_os("XYZ_SPOT_MAP").map(PathBuf::from))
+        .filter(|path| !path.as_os_str().is_empty())
+}
+
+fn symbol_id(symbol_ids: &HashMap<String, i32>, name: &str) -> Result<i32> {
+    symbol_ids
+        .get(name)
+        .copied()
+        .ok_or_else(|| eyre!("market {name} has no symbol ID"))
+}
+
 fn select_paired_markets(
     perpetual_markets: &[String],
     spot_markets: &[(String, String)],
-    subscriptions_per_market: usize,
-    subscription_limit: usize,
 ) -> Result<Vec<(String, &'static str)>> {
     let spot_bases: HashSet<&str> = spot_markets
         .iter()
@@ -348,14 +534,6 @@ fn select_paired_markets(
             push_market(&mut selected, &mut selected_names, name.clone(), "spot");
         }
     }
-    if selected.len() * subscriptions_per_market > subscription_limit {
-        return Err(eyre!(
-            "{} paired spot and perpetual markets need {} subscriptions, above the limit of {}",
-            selected.len(),
-            selected.len() * subscriptions_per_market,
-            subscription_limit
-        ));
-    }
     let paired_perpetual_count = paired_perpetuals.len();
     let perpetual_count = selected.iter().filter(|(_, kind)| *kind == "perp").count();
     let spot_count = selected.len() - perpetual_count;
@@ -364,7 +542,6 @@ fn select_paired_markets(
         paired_perpetual_count,
         perpetual_count,
         spot_count,
-        subscription_count = selected.len() * subscriptions_per_market,
         "selected markets with both spot and perpetual data"
     );
     Ok(selected)
@@ -460,5 +637,22 @@ async fn flush(
             error!("database writer task failed: {error}");
             std::process::exit(1);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    #[test]
+    fn cli_definition_is_valid() {
+        Args::command().debug_assert();
+    }
+
+    #[test]
+    fn subscription_budget_rejects_excess() {
+        assert!(check_subscription_budget(500, 2, 1000).is_ok());
+        assert!(check_subscription_budget(334, 3, 1000).is_err());
     }
 }
